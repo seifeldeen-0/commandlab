@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================
 #  CommandLab — Installer & Launcher
-#  For people who have never used Linux before.
-#  Just run this script and it will handle everything.
+#  Supports Ubuntu/Debian, Fedora/RHEL, Arch Linux
+#  Run this once to set up and launch CommandLab.
 # ============================================================
 
 set -e
@@ -49,13 +49,10 @@ info "Checking for Python 3..."
 if ! command -v python3 &>/dev/null; then
     warn "Python 3 not found. Attempting to install it..."
 
-    # Try apt (Ubuntu/Debian)
     if command -v apt-get &>/dev/null; then
         sudo apt-get update -qq && sudo apt-get install -y python3
-    # Try dnf (Fedora/RHEL)
     elif command -v dnf &>/dev/null; then
         sudo dnf install -y python3
-    # Try pacman (Arch)
     elif command -v pacman &>/dev/null; then
         sudo pacman -Sy --noconfirm python
     else
@@ -66,11 +63,10 @@ fi
 PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
 success "Python $PYTHON_VERSION found."
 
-# Confirm Python 3.8+
 PYTHON_MINOR=$(python3 -c "import sys; print(sys.version_info.minor)")
 PYTHON_MAJOR=$(python3 -c "import sys; print(sys.version_info.major)")
 if [[ "$PYTHON_MAJOR" -lt 3 ]] || { [[ "$PYTHON_MAJOR" -eq 3 ]] && [[ "$PYTHON_MINOR" -lt 8 ]]; }; then
-    error "CommandLab requires Python 3.8 or newer. You have Python $PYTHON_VERSION.\nPlease upgrade Python: https://www.python.org/downloads/"
+    error "CommandLab requires Python 3.8 or newer. You have Python $PYTHON_VERSION.\nPlease upgrade: https://www.python.org/downloads/"
 fi
 
 # ── Step 3: Check required files are present ─────────────────
@@ -78,12 +74,12 @@ info "Checking CommandLab files..."
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [[ ! -f "$SCRIPT_DIR/commandlab.py" ]]; then
-    error "commandlab.py not found in the current directory ($SCRIPT_DIR).\nMake sure you are running this script from inside the CommandLab folder."
+if [[ ! -d "$SCRIPT_DIR/commandlab" ]]; then
+    error "commandlab/ package directory not found in $SCRIPT_DIR.\nMake sure you are running this script from inside the CommandLab folder."
 fi
 
-if [[ ! -f "$SCRIPT_DIR/command_classifier.py" ]]; then
-    error "command_classifier.py not found in the current directory ($SCRIPT_DIR).\nBoth files must be in the same folder as this script."
+if [[ ! -f "$SCRIPT_DIR/commandlab/__main__.py" ]]; then
+    error "commandlab/__main__.py not found.\nThe folder may be incomplete. Please re-download CommandLab."
 fi
 
 success "All required files are present."
@@ -91,15 +87,14 @@ success "All required files are present."
 # ── Step 4: Create plugins directory if missing ───────────────
 if [[ ! -d "$SCRIPT_DIR/tasks" ]]; then
     mkdir -p "$SCRIPT_DIR/tasks"
-    success "Created tasks/ directory for plugins."
+    success "Created tasks/ directory for custom plugins."
 fi
 
-# ── Step 5: Enable sandbox (optional, best-effort) ───────────
+# ── Step 5: Check sandbox isolation support ──────────────────
 info "Checking sandbox isolation support..."
 
 SANDBOX_OK=false
 
-# Check if we already have a working sandbox
 if python3 - <<'PYCHECK' 2>/dev/null
 import subprocess, sys
 r = subprocess.run(
@@ -112,7 +107,6 @@ then
     SANDBOX_OK=true
     success "Full sandbox isolation is available."
 else
-    # Try to enable unprivileged user namespaces
     if [[ -f /proc/sys/kernel/unprivileged_userns_clone ]]; then
         CURRENT=$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo "0")
         if [[ "$CURRENT" != "1" ]]; then
@@ -126,22 +120,21 @@ else
         else
             SANDBOX_OK=true
         fi
-    else
-        # Check if running as root
-        if [[ "$EUID" -eq 0 ]]; then
-            SANDBOX_OK=true
-            success "Running as root — full sandbox isolation available."
-        fi
+    fi
+
+    if [[ "$EUID" -eq 0 ]]; then
+        SANDBOX_OK=true
+        success "Running as root — full sandbox isolation available."
     fi
 fi
 
 if [[ "$SANDBOX_OK" == "false" ]]; then
     echo ""
     warn "Full sandbox isolation is not available on this system."
-    warn "CommandLab will still work, but will run in reduced-security mode."
-    warn "Dangerous commands will be blocked automatically."
+    warn "CommandLab will still work, but dangerous commands will be blocked"
+    warn "automatically instead of running in an isolated environment."
     echo ""
-    warn "To enable full isolation in the future, run:"
+    warn "To enable full sandbox isolation, run:"
     warn "  sudo sysctl -w kernel.unprivileged_userns_clone=1"
     echo ""
     read -rp "  Press Enter to continue anyway, or Ctrl+C to cancel... "
@@ -155,4 +148,4 @@ echo ""
 sleep 1
 
 cd "$SCRIPT_DIR"
-exec python3 commandlab.py
+exec python3 -m commandlab

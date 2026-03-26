@@ -1,2 +1,175 @@
-Just run this command on your terminal:
-bash installer.sh
+==============================================================
+  CommandLab — Installation & Usage Guide
+==============================================================
+
+WHAT IS COMMANDLAB?
+-------------------
+CommandLab is an interactive Linux command-line learning tool.
+It teaches you real Linux commands through hands-on challenges
+across five domains: Files, Viewing, Permissions, Processes,
+and Networking. Commands are verified in a safe sandbox.
+
+
+REQUIREMENTS
+------------
+- A Linux system (Ubuntu, Debian, Fedora, Arch, or similar)
+- Python 3.8 or newer
+- A terminal (any terminal application)
+
+CommandLab has NO external dependencies — pure Python 3 only.
+
+
+HOW TO GET COMMANDLAB
+---------------------
+Option A — Download the ZIP from GitHub:
+  1. Go to the CommandLab GitHub page
+  2. Click "Code" > "Download ZIP"
+  3. Open your terminal and run:
+       cd ~/Downloads
+       unzip commandlab-main.zip
+       cd commandlab-main
+
+Option B — Clone with Git:
+       git clone https://github.com/<your-repo>/commandlab.git
+       cd commandlab
+
+
+HOW TO INSTALL AND LAUNCH (recommended)
+----------------------------------------
+Run the installer script from inside the CommandLab folder:
+
+       bash installer.sh
+
+The installer will automatically:
+  - Confirm you are on Linux
+  - Check that Python 3.8+ is installed (and install it if not)
+  - Verify all required files are present
+  - Create the tasks/ directory for custom plugins
+  - Check that sandbox isolation is available
+  - Launch CommandLab
+
+You only need to run the installer once. After that, see the
+"HOW TO RUN MANUALLY" section below to launch it directly.
+
+
+HOW TO RUN MANUALLY (after first install)
+------------------------------------------
+From inside the CommandLab folder, run:
+
+       python3 -m commandlab
+
+To make it easier to launch from anywhere, you can add a
+shortcut (alias) to your shell:
+
+  1. Open ~/.bashrc (or ~/.zshrc) in a text editor
+  2. Add this line at the bottom (adjust the path):
+       alias commandlab='cd /path/to/commandlab && python3 -m commandlab'
+  3. Save the file, then run:
+       source ~/.bashrc
+  4. Now you can launch it from anywhere by typing:
+       commandlab
+
+
+NAVIGATING COMMANDLAB
+----------------------
+Main menu:
+  - Type a number (1-5) to enter a domain
+  - p  — Browse custom plugin packs
+  - s  — View your stats and progress
+  - l  — Switch language (English / Arabic)
+  - r  — Reset all progress
+  - q  — Quit
+
+Inside a domain:
+  - Type a number to start a task
+  - r  — Pick a random unsolved task
+  - b  — Go back to the main menu
+
+Inside a task:
+  - Type your Linux command and press Enter to check it
+  - hint    — Show a hint
+  - concept — Explain the underlying concept
+  - answer  — Reveal the answer (marks task as not completed)
+  - skip    — Skip to the next task
+  - b       — Go back to the task list
+
+
+SANDBOX MODE
+------------
+Some tasks run your command in an isolated sandbox to verify
+the result. The sandbox is a safe, temporary environment —
+nothing you type can affect your real system.
+
+If sandbox isolation is unavailable on your system, dangerous
+commands are automatically blocked instead. You can enable
+full isolation by running:
+
+       sudo sysctl -w kernel.unprivileged_userns_clone=1
+
+To make this setting survive reboots, add this line to
+/etc/sysctl.conf:
+
+       kernel.unprivileged_userns_clone=1
+
+
+CUSTOM PLUGIN TASKS
+--------------------
+You can add your own task packs by placing JSON or YAML files
+in the tasks/ directory inside the CommandLab folder.
+
+Each file must follow this structure:
+  {
+    "domain": "my_domain",
+    "name": "My Domain Name",
+    "description": "What this pack teaches",
+    "author": "Your Name",
+    "tasks": [
+      {
+        "id": 10001,
+        "level": "easy",
+        "title": "Task title",
+        "question": "What should the user do?",
+        "concept": "Explanation of the concept",
+        "hint": "A helpful hint",
+        "accepted": ["correct-command", "alternative-command"],
+        "keywords": ["keyword1", "keyword2"]
+      }
+    ]
+  }
+
+Plugin tasks appear in the main menu alongside built-in domains.
+
+
+TROUBLESHOOTING
+---------------
+Problem: "python3: command not found"
+  Install Python 3 for your distribution:
+    Ubuntu/Debian:  sudo apt install python3
+    Fedora/RHEL:    sudo dnf install python3
+    Arch Linux:     sudo pacman -S python
+
+Problem: "No module named commandlab"
+  Make sure you are running the command from inside the
+  CommandLab folder, not from your home directory.
+  Run:  cd /path/to/commandlab  then  python3 -m commandlab
+
+Problem: Colors or boxes look broken in the terminal
+  Try a different terminal emulator, or set:
+    export TERM=xterm-256color
+  before running CommandLab.
+
+Problem: Sandbox tasks always fail
+  Check if unprivileged user namespaces are enabled:
+    cat /proc/sys/kernel/unprivileged_userns_clone
+  If it prints 0, run:
+    sudo sysctl -w kernel.unprivileged_userns_clone=1
+
+Problem: Permission denied when running installer.sh
+  Make the script executable first:
+    chmod +x installer.sh
+    ./installer.sh
+
+
+==============================================================
+  Happy learning!
+==============================================================

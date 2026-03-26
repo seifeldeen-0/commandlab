@@ -1,202 +1,7 @@
-#!/usr/bin/env python3
-"""
-╔═══════════════════════════════════════════╗
-║   ██████╗ ██████╗ ███╗   ███╗███╗   ███╗ ║
-║  ██╔════╝██╔═══██╗████╗ ████║████╗ ████║ ║
-║  ██║     ██║   ██║██╔████╔██║██╔████╔██║ ║
-║  ██║     ██║   ██║██║╚██╔╝██║██║╚██╔╝██║ ║
-║  ╚██████╗╚██████╔╝██║ ╚═╝ ██║██║ ╚═╝ ██║ ║
-║   ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝     ╚═╝ ║
-║      ▄▀▄ █   ▄▀▄ █▄▄                     ║
-║      █▀█ █▄▄ █▀█ █▄█                     ║
-║   [ command-line learning toolkit ]       ║
-╚═══════════════════════════════════════════╝
-
-CommandLab — Interactive Linux CLI Learning Tool
-Pure Python 3, zero dependencies.
-"""
-
 import os
-import sys
-import json
-import subprocess
-import hashlib
-import datetime
-import time
-import shutil
-import textwrap
 import re
-import tempfile
 import stat
-import signal
-
-# ── Command Classifier integration ───────────────────────────
-# Import the classifier from the same directory as this script.
-# If it's not found (e.g. running from a different cwd), fall back
-# gracefully so the rest of the tool still works.
-try:
-    import importlib.util as _ilu
-    _clf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "command_classifier.py")
-    _clf_spec = _ilu.spec_from_file_location("command_classifier", _clf_path)
-    _clf_mod  = _ilu.module_from_spec(_clf_spec)
-    import sys as _sys
-    _sys.modules["command_classifier"] = _clf_mod   # register so dataclass __module__ resolves
-    _clf_spec.loader.exec_module(_clf_mod)
-    _classify         = _clf_mod.classify           # classify(raw_input) -> ClassificationResult
-    _Decision         = _clf_mod.Decision
-    _CLASSIFIER_OK    = True
-except Exception:
-    _CLASSIFIER_OK    = False
-    _classify         = None
-    _Decision         = None
-
-# ─────────────────────────────────────────────────────────────
-# ANSI COLORS
-# ─────────────────────────────────────────────────────────────
-class C:
-    RESET   = "\033[0m"
-    BOLD    = "\033[1m"
-    DIM     = "\033[2m"
-    GREEN   = "\033[38;5;114m"
-    YELLOW  = "\033[38;5;221m"
-    ORANGE  = "\033[38;5;208m"
-    RED     = "\033[38;5;203m"
-    BLUE    = "\033[38;5;111m"
-    CYAN    = "\033[38;5;87m"
-    PURPLE  = "\033[38;5;141m"
-    GRAY    = "\033[38;5;240m"
-    WHITE   = "\033[38;5;252m"
-    BG_DARK = "\033[48;5;235m"
-    BG_BOX  = "\033[48;5;233m"
-
-    @staticmethod
-    def strip(text):
-        return re.sub(r'\033\[[0-9;]*m', '', text)
-
-def clen(text):
-    """Visible length of a string (strips ANSI codes)."""
-    return len(C.strip(text))
-
-def cprint(text=""):
-    print(text + C.RESET)
-
-def term_width():
-    return shutil.get_terminal_size((100, 30)).columns
-
-# ─────────────────────────────────────────────────────────────
-# LOCALIZATION — Arabic / English
-# ─────────────────────────────────────────────────────────────
-_LANG = "en"   # runtime language: "en" | "ar"
-
-STRINGS = {
-    # ── Main menu ──────────────────────────────────────────────
-    "total_progress":       {"en": "Total Progress",        "ar": "التقدم الكلي"},
-    "domains":              {"en": "DOMAINS",               "ar": "المجالات"},
-    "stats":                {"en": "Stats",                 "ar": "الإحصائيات"},
-    "reset":                {"en": "Reset progress",        "ar": "إعادة التعيين"},
-    "quit":                 {"en": "Quit",                  "ar": "خروج"},
-    "challenges":           {"en": "Challenges",            "ar": "التحديات"},
-    "choose_domain":        {"en": "Choose domain (1-5)",   "ar": "اختر المجال (1-5)"},
-    "plugins":              {"en": "Plugins",               "ar": "الإضافات"},
-    "language":             {"en": "Language",              "ar": "اللغة"},
-    # ── Domain menu ────────────────────────────────────────────
-    "tasks":                {"en": "TASKS",                 "ar": "المهام"},
-    "back":                 {"en": "Back",                  "ar": "رجوع"},
-    "random_task":          {"en": "Random unlocked task",  "ar": "مهمة عشوائية"},
-    "choose_task":          {"en": "Choose task number (1-20)", "ar": "اختر رقم المهمة (1-20)"},
-    "locked_level":         {"en": "LOCKED",                "ar": "مقفل"},
-    "complete_first":       {"en": "complete {prev} first ({n} left)", "ar": "أكمل {prev} أولاً ({n} متبقية)"},
-    # ── Task screen ────────────────────────────────────────────
-    "sandbox_env":          {"en": "Sandbox environment prepared:", "ar": "بيئة الاختبار جاهزة:"},
-    "commands_help":        {"en": "Commands: hint, answer, concept, skip  b(back)", "ar": "الأوامر: hint, answer, concept, skip  b(رجوع)"},
-    "hint_label":           {"en": "💡 Hint:",              "ar": "💡 تلميح:"},
-    "hint_more":            {"en": "Still stuck? Type answer to reveal the full answer.", "ar": "ما زلت عالقاً؟ اكتب answer لرؤية الإجابة."},
-    "concept_label":        {"en": "📖 Core Concept:",      "ar": "📖 المفهوم الأساسي:"},
-    "answer_revealed":      {"en": "⚠  ANSWER REVEALED — task will NOT be marked as completed", "ar": "⚠  تم كشف الإجابة — لن تُحتسب هذه المهمة"},
-    "answer_label":         {"en": "Answer:",               "ar": "الإجابة:"},
-    "running_sandbox":      {"en": "⏳ Running in sandbox...", "ar": "⏳ التنفيذ في البيئة المعزولة..."},
-    "blocked":              {"en": "🚫 BLOCKED:",           "ar": "🚫 محظور:"},
-    "not_permitted":        {"en": "That command is not permitted in the lab environment.", "ar": "هذا الأمر غير مسموح به في بيئة المختبر."},
-    "correct_sandbox":      {"en": "✓ CORRECT!  State verified in sandbox.  +1 completed", "ar": "✓ صحيح!  تم التحقق من الحالة.  +1 مكتملة"},
-    "correct_keyword":      {"en": "✓ CORRECT!  +1 completed",   "ar": "✓ صحيح!  +1 مكتملة"},
-    "correct_revealed":     {"en": "✓ Correct — but answer was revealed, so not counted.", "ar": "✓ صحيح — لكن الإجابة كانت مكشوفة، لا تُحتسب."},
-    "peek_note":            {"en": "  Come back without peeking to mark it done.", "ar": "  عد دون النظر للإجابة لتسجيلها."},
-    "already_done":         {"en": "✓ Correct! (Already completed)", "ar": "✓ صحيح! (مكتملة سابقاً)"},
-    "unlocked":             {"en": "🔓 UNLOCKED: {level} level!", "ar": "🔓 مفتوح: مستوى {level}!"},
-    "cmd_output":           {"en": "Command output:",       "ar": "مخرجات الأمر:"},
-    "next_back":            {"en": "[n]ext task  [b]ack  [Enter] continue:", "ar": "[n] التالية  [b] رجوع  [Enter] استمر:"},
-    "wrong_sandbox":        {"en": "✗ Command ran but the goal was not achieved.", "ar": "✗ نُفِّذ الأمر لكن الهدف لم يتحقق."},
-    "wrong_keyword":        {"en": "✗ Not quite.",          "ar": "✗ ليس صحيحاً تماماً."},
-    "attempt":              {"en": "Attempt #",             "ar": "المحاولة رقم "},
-    "missing_keywords":     {"en": "You have some right parts. Still missing:", "ar": "لديك بعض الأجزاء الصحيحة. ما زال ناقصاً:"},
-    "try_hint":             {"en": "Doesn't look right. Try 'hint' if you're stuck.", "ar": "لا يبدو صحيحاً. جرب 'hint' إذا كنت عالقاً."},
-    "verifier_says":        {"en": "Verifier says:",        "ar": "الفاحص يقول:"},
-    "practice_prompt":      {"en": "Type the answer above to practice, or 'n' for next, 'b' to go back.", "ar": "اكتب الإجابة أعلاه للتدريب، أو 'n' للتالية، 'b' للرجوع."},
-    "next_task_prompt":     {"en": "[n]ext task  [b]ack  [Enter] practice anyway:", "ar": "[n] التالية  [b] رجوع  [Enter] تدرب على أي حال:"},
-    # ── Stats ──────────────────────────────────────────────────
-    "your_stats":           {"en": "YOUR STATS",            "ar": "إحصائياتك"},
-    "total":                {"en": "Total:",                "ar": "الإجمالي:"},
-    "revealed_count":       {"en": "Answers revealed (not counted):", "ar": "إجابات مكشوفة (لا تُحتسب):"},
-    "wrong_attempts":       {"en": "Total wrong attempts:", "ar": "مجموع المحاولات الخاطئة:"},
-    "hardest_tasks":        {"en": "Hardest tasks (most attempts):", "ar": "أصعب المهام (أكثر محاولات):"},
-    "press_enter":          {"en": "Press Enter to go back...", "ar": "اضغط Enter للرجوع..."},
-    # ── Locks ──────────────────────────────────────────────────
-    "level_locked":         {"en": "🔒 This level is locked.", "ar": "🔒 هذا المستوى مقفل."},
-    "complete_prev":        {"en": "Complete all {prev} tasks first.", "ar": "أكمل جميع مهام {prev} أولاً."},
-    "need_tasks":           {"en": "Still need: {n} task(s) in {prev}.", "ar": "ما زال ناقصاً: {n} مهمة في {prev}."},
-    "next_locked":          {"en": "Next level is locked. Complete {prev} tasks first.", "ar": "المستوى التالي مقفل. أكمل مهام {prev} أولاً."},
-    # ── Reset / session ────────────────────────────────────────
-    "progress_reset":       {"en": "Progress reset.",       "ar": "تم إعادة التعيين."},
-    "goodbye":              {"en": "See you next time. Keep learning!", "ar": "إلى اللقاء. استمر في التعلم!"},
-    "domain_complete":      {"en": "🎉 You completed the entire {domain} domain!", "ar": "🎉 أكملت مجال {domain} بالكامل!"},
-    "domain_progress":      {"en": "End of domain. {done}/{total} completed.", "ar": "نهاية المجال. {done}/{total} مكتمل."},
-    # ── Challenges ─────────────────────────────────────────────
-    "challenges_title":     {"en": "CHALLENGE MODE",        "ar": "وضع التحديات"},
-    "challenges_sub":       {"en": "Multi-step situational scenarios", "ar": "سيناريوهات متعددة الخطوات"},
-    "challenge_step":       {"en": "Step {n} of {total}:",  "ar": "الخطوة {n} من {total}:"},
-    "challenge_pass":       {"en": "✓ Step passed! Moving to next...", "ar": "✓ اجتزت هذه الخطوة! الانتقال للتالية..."},
-    "challenge_fail":       {"en": "✗ Step failed.",        "ar": "✗ فشلت هذه الخطوة."},
-    "challenge_complete":   {"en": "🏆 CHALLENGE COMPLETE!", "ar": "🏆 اكتمل التحدي!"},
-    "choose_challenge":     {"en": "Choose challenge (1-{n}) or b to go back:", "ar": "اختر التحدي (1-{n}) أو b للرجوع:"},
-    # ── Plugins ────────────────────────────────────────────────
-    "plugins_title":        {"en": "EXTERNAL PLUGINS",      "ar": "الإضافات الخارجية"},
-    "plugins_none":         {"en": "No plugins found in tasks/ directory.", "ar": "لا توجد إضافات في مجلد tasks/."},
-    "plugins_loaded":       {"en": "{n} plugin(s) loaded.",  "ar": "تم تحميل {n} إضافة."},
-    "plugin_domain":        {"en": "[PLUGIN]",              "ar": "[إضافة]"},
-    # ── Language ───────────────────────────────────────────────
-    "lang_select":          {"en": "Select language / اختر اللغة:", "ar": "Select language / اختر اللغة:"},
-    "lang_en":              {"en": "1. English",             "ar": "1. English"},
-    "lang_ar":              {"en": "2. العربية",             "ar": "2. العربية"},
-}
-
-def T(key, **kwargs):
-    """Translate a string key to the current language, with optional format vars."""
-    entry = STRINGS.get(key, {})
-    text = entry.get(_LANG, entry.get("en", key))
-    if kwargs:
-        text = text.format(**kwargs)
-    return text
-
-def set_language(lang: str):
-    global _LANG
-    _LANG = lang if lang in ("en", "ar") else "en"
-
-def select_language():
-    """Show language picker on first run. Returns chosen lang code."""
-    clear()
-    print(LOGO)
-    print(f"\n  {C.CYAN}{T('lang_select')}{C.RESET}\n")
-    print(f"  {C.GREEN}1{C.RESET}. English")
-    print(f"  {C.GREEN}2{C.RESET}. العربية (Arabic)\n")
-    try:
-        ch = input(f"  {C.GREEN}❯{C.RESET} ").strip()
-    except (KeyboardInterrupt, EOFError):
-        ch = "1"
-    if ch == "2":
-        set_language("ar")
-        return "ar"
-    set_language("en")
-    return "en"
+import subprocess
 
 # ─────────────────────────────────────────────────────────────
 # TASK DATABASE
@@ -234,7 +39,7 @@ TASKS = {
             "concept_ar": 'الملفات المخفية في Linux هي ببساطة ملفات تبدأ أسماؤها بنقطة. النواة لا تتعامل معها بشكل خاص — فقط ls يخفيها افتراضياً.',
             "hint_ar": "أمر ls يمتلك خياراً لعرض 'جميع' الملفات.",
 
-            "accepted": ["ls -a", "ls -la", "ls -al", "ls -A"],
+            "accepted": ["ls -a", "ls -al", "ls -A"],
             "keywords": ["ls", "-a"],
             "check_type": "keyword",
             "setup": "touch visible.txt .hidden_config .env",
@@ -335,7 +140,7 @@ TASKS = {
             "concept_ar": 'الـ inode هو بنية بيانات النواة التي تخزن كل بيانات الملف ما عدا اسمه. ls -i يقرأ رقم الـ inode من مدخل المجلد عبر stat().',
             "hint_ar": 'الأمر ls يمتلك خياراً مخصصاً لعرض أرقام الـ inodes.',
 
-            "accepted": ["ls -i", "ls -li", "ls -ia"],
+            "accepted": ["ls -i", "ls -ia"],
             "keywords": ["ls", "-i"],
             "check_type": "keyword",
             "setup": "touch file_a.txt file_b.txt file_c.txt",
@@ -356,7 +161,7 @@ TASKS = {
             "hint_ar": 'الأمر ln يُنشئ الروابط. الخيار -s يجعله رمزياً. الهدف يأتي قبل اسم الرابط.',
 
             "accepted": ["ln -s v2.1 current", "ln -s v2.1/ current"],
-            "keywords": ["ln", "-s"],
+            "keywords": ["ln", "-s", "v2.1", "current"],
             "check_type": "keyword",
             "setup": "mkdir v2.1 && touch v2.1/app.py v2.1/config.yml",
             "verify": lambda sb, rc, out, err: (
@@ -376,8 +181,7 @@ TASKS = {
             "concept_ar": "الخيار -mtime -1 يعني 'عُدِّل منذ أقل من 1×24 ساعة'. علامة الطرح تعني 'أقل من'. find يقارن mtime الملف من stat() مع الوقت الحالي.",
             "hint_ar": "استخدم find مع -mtime وقيمة تعني 'أقل من يوم واحد'.",
 
-            "accepted": ["find /var/log -mtime -1", "find /var/log/ -mtime -1", "find /var/log -mtime -1 -type f",
-                         "find logs -mtime -1", "find logs/ -mtime -1", "find . -mtime -1"],
+            "accepted": ["find logs -mtime -1", "find logs/ -mtime -1", "find . -mtime -1"],
             "keywords": ["-mtime", "-1"],
             "check_type": "keyword",
             "setup": "mkdir logs && touch logs/access.log logs/error.log logs/debug.log",
@@ -419,8 +223,7 @@ TASKS = {
             "concept_ar": "الخيار -size يستخدم stat() للتحقق من st_size. البادئة + تعني 'أكبر من'. اللاحقة k تعني كيلوبايت. الخيار -type f يستثني المجلدات.",
             "hint_ar": 'ادمج find مع -size و-type. الصياغة +1k تعني أكبر من كيلوبايت.',
 
-            "accepted": ["find / -size +100M -type f", "find / -type f -size +100M",
-                         "find . -size +1k -type f", "find . -type f -size +1k"],
+            "accepted": ["find . -size +1k -type f", "find . -type f -size +1k"],
             "keywords": ["-size", "-type", "f"],
             "check_type": "keyword",
             "setup": "python3 -c \"open('small.txt','w').write('hi')\" && python3 -c \"open('large.dat','w').write('x'*2000)\" && mkdir subdir && python3 -c \"open('subdir/big.log','w').write('y'*5000)\"",
@@ -501,8 +304,7 @@ TASKS = {
             "concept_ar": 'الملفات المتفرقة تمتلك ثغرات — كتل غير مخصصة تُقرأ كأصفار دون استهلاك مساحة. truncate يُنشئ الملفات المتفرقة فوراً.',
             "hint_ar": 'الأمر truncate -s يضبط حجم الملف دون تخصيص جميع الكتل.',
 
-            "accepted": ["dd if=/dev/zero bs=1 count=1 seek=1G of=sparse.img", "dd if=/dev/zero of=sparse.img bs=1 count=0 seek=1G", "truncate -s 1G sparse.img",
-                         "truncate -s 10M sparse.img", "dd if=/dev/zero of=sparse.img bs=1 count=0 seek=10M"],
+            "accepted": ["truncate -s 10M sparse.img", "dd if=/dev/zero of=sparse.img bs=1 count=0 seek=10M"],
             "keywords": ["sparse.img"],
             "check_type": "keyword",
             "setup": "",
@@ -523,18 +325,17 @@ TASKS = {
             "concept_ar": 'الروابط الصلبة تتشارك نفس الـ inode. الخيار find -inum يبحث برقم الـ inode كاشفاً جميع المدخلات التي تشير إليه.',
             "hint_ar": 'أولاً احصل على رقم الـ inode من ls -i، ثم استخدم find -inum.',
 
-            "accepted": ["find /home -inum 524312", "find /home/ -inum 524312",
-                         "find . -inum $(ls -i original.txt | awk '{print $1}')",
-                         "ls -i original.txt"],
+            "accepted": ["find . -inum $(stat -c %i original.txt)",
+                         "find . -inum $(ls -i original.txt | awk '{print $1}')"],
             "keywords": ["-inum"],
             "check_type": "keyword",
             "setup": "echo 'shared content' > original.txt && ln original.txt hardlink_a.txt && ln original.txt hardlink_b.txt",
             "verify": lambda sb, rc, out, err: (
                 rc == 0 and (
-                    "hardlink_a.txt" in out or "hardlink_b.txt" in out or "original.txt" in out
-                ) and "-inum" in err + out or
-                (rc == 0 and re.search(r'\d+', out)),
-                "Must use -inum to find related hard links OR show the inode number"
+                    sum(1 for name in ("original.txt", "hardlink_a.txt", "hardlink_b.txt") if name in out) >= 2
+                    or bool(re.search(r'^\s*\d+', out, re.MULTILINE))
+                ),
+                "Must find at least 2 of the 3 hard-linked files (original.txt, hardlink_a.txt, hardlink_b.txt) OR show inode numbers"
             ),
         },
         {
@@ -588,12 +389,11 @@ TASKS = {
             "concept_ar": 'الأداة inotifywait تستخدم نظام inotify في النواة — جهاز يُسلّم أحداث نظام الملفات. خلافاً للاستطلاع الدوري، لا تستهلك CPU أثناء الانتظار.',
             "hint_ar": 'استخدم inotifywait مع -m لوضع المراقبة، -r للتكرار، -e لتحديد نوع الحدث.',
 
-            "accepted": ["inotifywait -mr -e modify /etc", "inotifywait -m -r -e modify /etc", "inotifywait -rme modify /etc",
-                         "inotifywait -mr -e modify .", "inotifywait -m -e modify ."],
-            "keywords": ["inotifywait", "-m", "-e", "modify"],
+            "accepted": ["inotifywait -mr -e modify .", "inotifywait -m -e modify .", "inotifywait -rme modify ."],
+            "keywords": ["inotifywait", "modify"],
             "check_type": "keyword",
         "setup": 'touch watch_target.txt',
-        "verify": lambda sb, rc, out, err: ("inotifywait" in err + out or rc == 127, "Must use inotifywait. rc=127 means not installed — that's acceptable in keyword mode"),
+        "verify": lambda sb, rc, out, err: (rc == 127 or "watches" in (err + out).lower() or "inotifywait" in err + out, "Must use inotifywait. rc=127=not installed, 'watches' message=started OK"),
         },
         {
             "id": 20, "level": "insane",
@@ -726,9 +526,8 @@ TASKS = {
             "concept_ar": 'fd 1=stdout، fd 2=stderr. الرمز >ملف يعيد توجيه stdout. الرمز 2>&1 ينسخ fd2 إلى وجهة fd1 الحالية. الترتيب مهم.',
             "hint_ar": 'تحتاج إعادة توجيه fd 2 إلى نفس مكان fd 1. المعامل هو 2>&1.',
 
-            "accepted": ["ls /root > output.txt 2>&1", "ls /root &> output.txt", "ls /root &>output.txt",
-                         "ls /nonexistent_dir_xyz > output.txt 2>&1", "ls /nonexistent_dir_xyz &> output.txt"],
-            "keywords": ["output.txt", "2>&1"],
+            "accepted": ["ls /nonexistent_dir_xyz > output.txt 2>&1", "ls /nonexistent_dir_xyz &> output.txt"],
+            "keywords": ["output.txt"],
             "check_type": "keyword",
             "setup": "",
             "verify": lambda sb, rc, out, err: (
@@ -768,8 +567,7 @@ TASKS = {
             "concept_ar": 'sort يجمع الأسطر المتطابقة ← uniq -c يعدها ← sort -rn يرتبها تنازلياً ← head -3 يأخذ أعلى ثلاثة. أسلوب تحليل التكرار الكلاسيكي.',
             "hint_ar": 'ابنِ pipeline: sort أولاً، ثم عُدَّ التكرارات بـ uniq -c، ثم رتّب بالعدد.',
 
-            "accepted": ["sort access.log | uniq -c | sort -rn | head -10", "sort access.log | uniq -c | sort -rn | head -n 10",
-                         "sort access.log | uniq -c | sort -rn | head -3", "sort access.log | uniq -c | sort -rn | head -n 3"],
+            "accepted": ["sort access.log | uniq -c | sort -rn | head -3", "sort access.log | uniq -c | sort -rn | head -n 3"],
             "keywords": ["sort", "uniq", "-c", "sort", "-rn", "head"],
             "check_type": "keyword",
             "setup": "printf 'GET /home\nGET /api\nGET /home\nGET /home\nGET /api\nGET /about\nGET /home\nGET /api\n' > access.log",
@@ -789,7 +587,7 @@ TASKS = {
             "concept_ar": 'الأمر sed -i يكتب إلى ملف مؤقت ثم يُعيد تسميته — استبدال ذري. الصيغة s/قديم/جديد/g: s=استبدل، g=عالمي (كل التكرارات في السطر).',
             "hint_ar": 'الأمر sed مع الخيار -i (في المكان) وتعبير الاستبدال s/قديم/جديد/g.',
 
-            "accepted": ["sed -i 's/localhost/127.0.0.1/g' config.txt", "sed -i 's/localhost/127.0.0.1/g' config.txt"],
+            "accepted": ["sed -i 's/localhost/127.0.0.1/g' config.txt"],
             "keywords": ["sed", "-i", "localhost", "127.0.0.1", "config.txt"],
             "check_type": "keyword",
             "setup": "printf 'host=localhost\ndb_host=localhost\nredis=localhost:6379\n' > config.txt",
@@ -860,11 +658,11 @@ TASKS = {
         },
         {
             "id": 33, "level": "hard",
-            "title": "Watch a file for changes",
+            "title": "Repeat a command at an interval",
             "question": "Run the command 'df -h' every 2 seconds and show the output refreshed in place in the terminal.",
             "concept": "watch uses curses to clear and redraw the terminal at fixed intervals. It is cleaner than a shell loop with sleep because it handles terminal resizing and shows a timestamp.",
             "hint": "The watch command runs another command repeatedly at an interval.",
-            "title_ar": 'مراقبة ملف بحثاً عن تغييرات',
+            "title_ar": 'تكرار أمر على فترات زمنية',
             "question_ar": "نفّذ الأمر 'df -h' كل ثانيتين واعرض المخرجات مُحدَّثة في مكانها في الطرفية.",
             "concept_ar": 'الأمر watch يستخدم curses لمسح الطرفية وإعادة رسمها على فترات ثابتة. أنظف من حلقة shell مع sleep لأنه يتعامل مع تغيير حجم الطرفية.',
             "hint_ar": 'الأمر watch يُشغِّل أمراً آخر بشكل متكرر على فترة زمنية.',
@@ -930,8 +728,9 @@ TASKS = {
             "check_type": "keyword",
             "setup": "",
             "verify": lambda sb, rc, out, err: (
-                rc == 0 and re.search(r'[0-9a-f]+-[0-9a-f]+\s+[rwxp-]{4}', out),
-                "Output must contain memory map entries in format: address-range permissions offset dev inode path"
+                (rc == 0 and bool(re.search(r'[0-9a-f]+-[0-9a-f]+\s+[rwxp-]{4}', out))) or
+                (rc != 0 and rc != 127 and "/proc" in err + out),
+                "Output must contain memory map entries (address-range permissions), or PID did not exist"
             ),
         },
         {
@@ -989,7 +788,7 @@ TASKS = {
             "keywords": ["inotifywait", "-e", "modify", "app.log"],
             "check_type": "keyword",
         "setup": 'touch app.log',
-        "verify": lambda sb, rc, out, err: ("inotifywait" in err + out or rc == 127, "Must use inotifywait in a loop."),
+        "verify": lambda sb, rc, out, err: (rc == 127 or "watches" in (err + out).lower() or "inotifywait" in err + out, "Must use inotifywait in a loop. rc=127=not installed, 'watches' message=started OK"),
         },
         {
             "id": 40, "level": "insane",
@@ -1003,7 +802,7 @@ TASKS = {
             "hint_ar": 'xxd يمتلك الخيار -l لتحديد البايتات و -p للإخراج العادي.',
 
             "accepted": ["xxd -l 4 -p journal.bin", "xxd -l4 -p journal.bin", "head -c 4 journal.bin | xxd -p"],
-            "keywords": ["xxd", "-l", "4", "journal.bin"],
+            "keywords": ["xxd", "journal.bin"],
             "check_type": "keyword",
             "setup": "python3 -c \"open('journal.bin','wb').write(bytes([0xDE,0xAD,0xBE,0xEF,0x01,0x02,0x03,0x04,0x05]))\"",
             "verify": lambda sb, rc, out, err: (
@@ -1046,8 +845,8 @@ TASKS = {
             "concept_ar": 'chmod u+x يضبط بت التنفيذ للمستخدم (المالك) فقط. chmod +x سيضبطه للجميع. النواة تتحقق من بت التنفيذ أثناء execve() قبل تحميل البرنامج.',
             "hint_ar": "chmod مع 'u+x' يضبط التنفيذ للمستخدم/المالك فقط.",
 
-            "accepted": ["chmod u+x deploy.sh", "chmod 744 deploy.sh"],
-            "keywords": ["chmod", "u+x", "deploy.sh"],
+            "accepted": ["chmod u+x deploy.sh", "chmod +x deploy.sh"],
+            "keywords": ["chmod", "+x", "deploy.sh"],
             "check_type": "keyword",
             "setup": "echo '#!/bin/bash\necho hello' > deploy.sh && chmod 644 deploy.sh",
             "verify": lambda sb, rc, out, err: (
@@ -1142,8 +941,7 @@ TASKS = {
             "concept_ar": 'بت الـ sticky (+t) على مجلد يمنع المستخدمين من حذف الملفات التي لا يملكونها حتى لو كانت لديهم صلاحية الكتابة على المجلد.',
             "hint_ar": 'chmod مع +t يضبط بت الـ sticky. أو استخدم 1777 بالثماني.',
 
-            "accepted": ["chmod +t /srv/shared", "chmod 1777 /srv/shared", "chmod 1775 /srv/shared",
-                         "chmod +t shared", "chmod 1777 shared", "chmod 1775 shared/"],
+            "accepted": ["chmod +t shared", "chmod 1777 shared", "chmod +t /srv/shared", "chmod 1777 /srv/shared"],
             "keywords": ["chmod", "shared"],
             "check_type": "keyword",
             "setup": "mkdir shared && chmod 777 shared",
@@ -1163,7 +961,7 @@ TASKS = {
             "concept_ar": 'الملفات ذات SUID تعمل بـ euid مالكها بدلاً من المستدعي. find -perm /4000 يستخدم قناع بت SUID. هذه أهداف تصعيد الامتيازات إذا كانت مُعطَّلة.',
             "hint_ar": "استخدم find مع -perm وقناع SUID /4000. البادئة / تعني 'أي من هذه البتات'.",
 
-            "accepted": ["find / -perm /4000 -type f", "find / -perm -4000 -type f", "find / -perm /4000 -type f 2>/dev/null", "find / -perm -u=s -type f",
+            "accepted": ["find / -perm /4000 -type f", "find / -perm -4000 -type f", "find / -perm /4000 -type f 2>/dev/null",
                          "find . -perm /4000 -type f", "find . -perm -4000 -type f"],
             "keywords": ["find", "-perm", "4000"],
             "check_type": "keyword",
@@ -1288,8 +1086,9 @@ TASKS = {
             "check_type": "keyword",
             "setup": "",
             "verify": lambda sb, rc, out, err: (
-                rc == 0 and bool(re.search(r'Cap(Eff|Prm|Inh|Bnd|Amb):\s+[0-9a-f]+', out)),
-                "Output must contain capability hex values like 'CapEff: 0000003fffffffff'"
+                (rc == 0 and bool(re.search(r'Cap(Eff|Prm|Inh|Bnd|Amb):\s+[0-9a-f]+', out))) or
+                (rc != 0 and rc != 127 and "/proc" in err + out),
+                "Output must contain capability hex values like 'CapEff: 0000003fffffffff', or PID did not exist"
             ),
         },
         {
@@ -1333,8 +1132,8 @@ TASKS = {
             "check_type": "keyword",
             "setup": "echo 'data' > critical.conf",
             "verify": lambda sb, rc, out, err: (
-                rc == 0 and ("i" in out or "Operation not supported" in err),
-                "Output must show the 'i' immutable flag, or filesystem doesn't support it"
+                rc == 0 and "critical.conf" in out,
+                "lsattr must run successfully and show critical.conf in output"
             ),
         },
         {
@@ -1350,7 +1149,7 @@ TASKS = {
 
             "accepted": ["find / -type d -perm -002 ! -perm -1000 2>/dev/null", "find / -type d -perm -o+w ! -perm -1000 2>/dev/null",
                          "find . -type d -perm -002 ! -perm -1000", "find . -type d -perm -o+w ! -perm -1000"],
-            "keywords": ["find", "-type", "d", "-perm", "-002"],
+            "keywords": ["find", "-type", "d", "-perm"],
             "check_type": "keyword",
             "setup": "mkdir safe_dir risky_dir sticky_dir && chmod 777 risky_dir && chmod 1777 sticky_dir && chmod 755 safe_dir",
             "verify": lambda sb, rc, out, err: (
@@ -1370,7 +1169,7 @@ TASKS = {
             "hint_ar": "sudo يُسجّل في /var/log/auth.log. ابحث عن مدخلات 'sudo' أو 'COMMAND'.",
 
             "accepted": ["grep sudo /var/log/auth.log | tail -20", "grep COMMAND /var/log/auth.log | tail -20", "tail -20 /var/log/auth.log | grep sudo"],
-            "keywords": ["grep", "sudo", "/var/log/auth.log"],
+            "keywords": ["grep", "/var/log/auth.log"],
             "check_type": "keyword",
         "setup": '',
         "verify": lambda sb, rc, out, err: ("auth.log" in err + out or "COMMAND" in out or rc in (0,1), "Must grep /var/log/auth.log for sudo COMMAND entries."),
@@ -1426,13 +1225,13 @@ TASKS = {
             "concept_ar": "ps يقرأ /proc/<pid>/stat و/proc/<pid>/cmdline لكل عملية. 'a' تعرض جميع المستخدمين، 'u' تعرض تنسيق المستخدم، 'x' تشمل العمليات بدون طرفية.",
             "hint_ar": 'الأمر ps مع الأعلام a و u و x مدمجة.',
 
-            "accepted": ["ps", "ps -aux"],
+            "accepted": ["ps aux", "ps -aux"],
             "keywords": ["ps", "aux"],
             "check_type": "keyword",
             "setup": "",
             "verify": lambda sb, rc, out, err: (
-                rc == 0 and "PID" in out and "CMD" in out and out.strip().count("\n") > 2,
-                "Output must show process headers (PID, CMD) and multiple process rows"
+                rc == 0 and "PID" in out and ("CMD" in out or "COMMAND" in out) and out.strip().count("\n") > 2,
+                "Output must show process headers (PID, CMD/COMMAND) and multiple process rows"
             ),
         },
         {
@@ -1446,7 +1245,7 @@ TASKS = {
             "concept_ar": 'pgrep يبحث في /proc عن العمليات المطابقة للنمط. يُعيد PID فقط — أنظف من ps|grep الذي يطابق عملية grep نفسها.',
             "hint_ar": 'pgrep مُصمَّم خصيصاً للبحث عن معرّفات العمليات بالاسم.',
 
-            "accepted": ["pgrep nginx", "pgrep -l nginx", "pgrep bash", "pgrep -l bash"],
+            "accepted": ["pgrep bash", "pgrep -l bash"],
             "keywords": ["pgrep"],
             "check_type": "keyword",
             "setup": "",
@@ -1483,7 +1282,7 @@ TASKS = {
             "concept_ar": 'إضافة & تُشعّب عملية فرعية وتضعها في مجموعة مهام الخلفية. الشل يعيّن لها رقم مهمة ويعود للمحث فوراً.',
             "hint_ar": 'حرف واحد يُضاف لأي أمر يرسله للخلفية.',
 
-            "accepted": ["python3 server.py &", "sleep 60 &"],
+            "accepted": ["sleep 60 &"],
             "keywords": ["&"],
             "check_type": "keyword",
             "setup": "",
@@ -1523,7 +1322,7 @@ TASKS = {
             "concept_ar": 'إغلاق جلسة SSH يرسل SIGHUP إلى مجموعة العمليات. nohup يجعل العملية محصّنة ضد SIGHUP ويعيد توجيه المخرجات إلى nohup.out.',
             "hint_ar": "nohup تعني 'لا علاقة'. ادمجها مع & لتخليف العملية في الخلفية.",
 
-            "accepted": ["nohup ./backup.sh &", "nohup bash backup.sh &", "nohup sleep 300 &"],
+            "accepted": ["nohup sleep 300 &"],
             "keywords": ["nohup", "&"],
             "check_type": "keyword",
             "setup": "",
@@ -1540,7 +1339,7 @@ TASKS = {
             "concept_ar": 'lsof يقرأ /proc/<pid>/fd و/proc/<pid>/fdinfo لكل واصف. في Linux كل شيء ملف — المقابس والأنابيب والأجهزة تظهر كواصفات مفتوحة.',
             "hint_ar": 'lsof يسرد الملفات المفتوحة. استخدم -p للتصفية بـ PID. $$ لـ PID الشل الحالي.',
 
-            "accepted": ["lsof -p 2222", "sudo lsof -p 2222", "lsof -p $$"],
+            "accepted": ["lsof -p $$"],
             "keywords": ["lsof", "-p"],
             "check_type": "keyword",
             "setup": "",
@@ -1631,13 +1430,13 @@ TASKS = {
             "concept_ar": 'الزومبي (حالة Z) انتهى لكن أبوه لم يستدع wait() بعد. يحتفظ بـ task_struct في النواة لكن دون ذاكرة. فقط wait() للأب أو وفاة الأب يزيله.',
             "hint_ar": 'ps مع مرشح للحالة Z (زومبي).',
 
-            "accepted": ["ps aux | grep -w Z", "ps aux | awk '$8==\"Z\"'", "ps -el | grep Z"],
+            "accepted": ["ps aux | awk '$8==\"Z\"'", "ps -el | grep Z"],
             "keywords": ["ps", "Z"],
             "check_type": "keyword",
             "setup": "",
             "verify": lambda sb, rc, out, err: (
-                rc == 0,
-                "Command must run successfully (exit code 0). It may return nothing if no zombies exist — that's correct."
+                rc in (0, 1),
+                "Command must run. Exit 0=found zombies, exit 1=none found (both are correct)"
             ),
         },
         {
@@ -1651,8 +1450,7 @@ TASKS = {
             "concept_ar": 'strace -f يتبع استدعاءات fork() ويتتبع العمليات الفرعية. بدون -f ترى استدعاءات الأب فقط وتُفوّت كل ما ولّده السكريبت.',
             "hint_ar": 'strace -f يتبع العمليات الفرعية التي يُنشئها fork().',
 
-            "accepted": ["strace -f bash script.sh", "strace -f -o trace.log bash script.sh",
-                         "strace -f bash -c 'ls'", "strace -f ls"],
+            "accepted": ["strace -f bash -c 'ls'", "strace -f ls"],
             "keywords": ["strace", "-f"],
             "check_type": "keyword",
             "setup": "echo 'ls /tmp && echo done' > script.sh",
@@ -1674,12 +1472,13 @@ TASKS = {
 
             "accepted": ["cat /proc/7777/wchan", "cat /proc/7777/stack", "sudo cat /proc/7777/stack",
                          "cat /proc/$$/wchan", "cat /proc/self/wchan"],
-            "keywords": ["wchan"],
+            "keywords": ["/proc"],
             "check_type": "keyword",
             "setup": "",
             "verify": lambda sb, rc, out, err: (
-                rc == 0 and bool(out.strip()),
-                "Output must contain the kernel wait channel name (a non-empty string)"
+                (rc == 0 and bool(out.strip())) or
+                (rc != 0 and rc != 127 and "/proc" in err + out),
+                "Output must contain the kernel wait channel name, or PID did not exist"
             ),
         },
         {
@@ -1693,8 +1492,7 @@ TASKS = {
             "concept_ar": 'OOM killer يُصنّف كل عملية بناءً على استخدام الذاكرة وoom_score_adj. /proc/<pid>/oom_score يُظهر الدرجة المحسوبة. درجة أعلى = احتمالية قتل أكبر.',
             "hint_ar": "درجة OOM موجودة في /proc/<pid>/oom_score. استخدم $$ أو 'self' للعملية الحالية.",
 
-            "accepted": ["cat /proc/1000/oom_score", "sudo cat /proc/1000/oom_score",
-                         "cat /proc/$$/oom_score", "cat /proc/self/oom_score"],
+            "accepted": ["cat /proc/$$/oom_score", "cat /proc/self/oom_score"],
             "keywords": ["oom_score"],
             "check_type": "keyword",
             "setup": "",
@@ -1714,8 +1512,7 @@ TASKS = {
             "concept_ar": 'كتابة -1000 في oom_score_adj يضبط أدنى درجة ممكنة. OOM killer يختار العملية ذات الدرجة الأعلى دائماً. -1000 تجعلها محصّنة فعلياً.',
             "hint_ar": 'اكتب -1000 في /proc/<pid>/oom_score_adj. استخدم $$ لـ PID الشل الحالي.',
 
-            "accepted": ["echo -1000 > /proc/1000/oom_score_adj", "sudo bash -c 'echo -1000 > /proc/1000/oom_score_adj'",
-                         "echo -1000 > /proc/$$/oom_score_adj", "echo -1000 > /proc/self/oom_score_adj"],
+            "accepted": ["echo -1000 > /proc/$$/oom_score_adj", "echo -1000 > /proc/self/oom_score_adj"],
             "keywords": ["oom_score_adj", "-1000"],
             "check_type": "keyword",
             "setup": "",
@@ -1807,7 +1604,7 @@ TASKS = {
             "hint_ar": "الأمر الحديث هو 'ip addr'. ifconfig هو البديل القديم المهجور.",
 
             "accepted": ["ip addr", "ip addr show", "ip a", "ip a show"],
-            "keywords": ["ip", "addr"],
+            "keywords": ["ip"],
             "check_type": "keyword",
         "setup": '',
         "verify": lambda sb, rc, out, err: (rc == 0 and bool(__import__("re").search(r"\d+: \w+:", out)), "ip addr must list interfaces in format N: name:"),
@@ -1840,8 +1637,8 @@ TASKS = {
             "concept_ar": 'ss يستعلم جدول مقابس النواة عبر netlink. -t=TCP، -u=UDP، -l=استماع، -p=عملية، -n=رقمي. أسرع بكثير من netstat المهجور.',
             "hint_ar": 'ss هو البديل الحديث لـ netstat. استخدم الأعلام t و u و l و p و n.',
 
-            "accepted": ["ss -tulpn", "ss -tlpn", "ss -tulpn", "netstat -tulpn"],
-            "keywords": ["ss", "-tulpn"],
+            "accepted": ["ss -tulpn", "ss -tlpn", "netstat -tulpn"],
+            "keywords": ["lpn"],
             "check_type": "keyword",
         "setup": '',
         "verify": lambda sb, rc, out, err: (rc == 0 and ("State" in out or "LISTEN" in out or "Recv-Q" in out), "ss -tulpn must show socket state table."),
@@ -1874,8 +1671,8 @@ TASKS = {
             "concept_ar": 'ip route يقرأ FIB للنواة (قاعدة بيانات إعادة التوجيه) عبر rtnetlink. المسار الافتراضي (0.0.0.0/0) هو بوابة الملاذ الأخير.',
             "hint_ar": "ip route يُظهر جدول التوجيه. سطر 'default' يُظهر البوابة.",
 
-            "accepted": ["ip route", "ip route show", "ip r", "route -n"],
-            "keywords": ["ip", "route"],
+            "accepted": ["ip route", "ip route show", "route -n"],
+            "keywords": ["route"],
             "check_type": "keyword",
         "setup": '',
         "verify": lambda sb, rc, out, err: (rc == 0 and bool(__import__("re").search(r"\d+\.\d+\.\d+\.\d+|default", out)), "ip route must show routing entries with IPs or a default route."),
@@ -1892,7 +1689,7 @@ TASKS = {
             "hint_ar": 'traceroute يتتبع المسار الذي تسلكه الحزم في الشبكة.',
 
             "accepted": ["traceroute cloudflare.com", "tracepath cloudflare.com"],
-            "keywords": ["traceroute", "cloudflare.com"],
+            "keywords": ["cloudflare.com"],
             "check_type": "keyword",
         "setup": '',
         "verify": lambda sb, rc, out, err: ("traceroute" in err + out or rc in (0,1), "Must use traceroute or tracepath."),
@@ -1959,8 +1756,8 @@ TASKS = {
             "concept_ar": "ss -tp يُظهر مقابس TCP مع معلومات العملية. حالة 'ESTABLISHED' تعني اكتمال المصافحة الثلاثية والاتصال نشط.",
             "hint_ar": 'ss مع أعلام لـ TCP وحالة التأسيس ومعلومات العملية.',
 
-            "accepted": ["ss -tp", "ss -t state established", "ss -tp state established", "netstat -tp"],
-            "keywords": ["ss", "-tp"],
+            "accepted": ["ss -tp", "ss -tp state established", "netstat -tp"],
+            "keywords": ["-tp"],
             "check_type": "keyword",
         "setup": '',
         "verify": lambda sb, rc, out, err: (rc == 0 and ("Recv-Q" in out or "State" in out or "ESTAB" in out), "ss output must show TCP connection state information."),
@@ -1993,7 +1790,7 @@ TASKS = {
             "concept_ar": 'ذاكرة ARP المؤقتة تربط عناوين IP بعناوين MAC على الشبكة المحلية. ip neigh هو البديل الحديث. المدخلات القديمة قد تشير إلى تسمم ARP.',
             "hint_ar": 'arp -n يُظهر ذاكرة ARP المؤقتة. ip neigh هو البديل الحديث.',
 
-            "accepted": ["arp -n", "ip neigh", "ip neighbor", "ip neigh show"],
+            "accepted": ["arp -n", "arp"],
             "keywords": ["arp"],
             "check_type": "keyword",
         "setup": '',
@@ -2011,7 +1808,7 @@ TASKS = {
             "hint_ar": 'curl لديه خيار لعرض الرؤوس فقط. -I يرسل طلب HEAD.',
 
             "accepted": ["curl -I http://example.com", "curl -I http://example.com/", "curl --head http://example.com"],
-            "keywords": ["curl", "-I", "http://example.com"],
+            "keywords": ["curl", "http://example.com"],
             "check_type": "keyword",
         "setup": '',
         "verify": lambda sb, rc, out, err: (rc == 0 and ("HTTP/" in out or "Content-Type" in out or "Server:" in out), "curl -I must return HTTP headers from example.com."),
@@ -2045,7 +1842,7 @@ TASKS = {
             "hint_ar": 'ادمج ss أو netstat مع awk أو grep لعد الاتصالات بالحالة.',
 
             "accepted": ["ss -t | awk 'NR>1 {print $1}' | sort | uniq -c", "netstat -nt | awk '{print $6}' | sort | uniq -c", "ss -tan | awk 'NR>1 {print $1}' | sort | uniq -c"],
-            "keywords": ["ss", "uniq", "-c"],
+            "keywords": ["uniq", "-c"],
             "check_type": "keyword",
         "setup": '',
         "verify": lambda sb, rc, out, err: (rc == 0 and bool(__import__("re").search(r"\d+\s+\w+", out)), "Output must show count+state pairs like 5 ESTABLISHED."),
@@ -2141,2303 +1938,3 @@ TASKS = {
     ],
 }
 
-# ─────────────────────────────────────────────────────────────
-# EXTERNAL PLUGIN / TASK LOADER
-# ─────────────────────────────────────────────────────────────
-import glob
-
-PLUGIN_TASKS = {}   # domain_name -> [task_dicts]  (loaded from tasks/*.json or tasks/*.yaml)
-_PLUGIN_META = {}   # domain_name -> {name, description, author}
-
-def _load_plugins():
-    """
-    Scan the tasks/ directory next to this script for JSON/YAML plugin files.
-    Each file must contain:
-      {
-        "domain": "my_domain",
-        "name": "Human Name",
-        "description": "...",
-        "author": "...",
-        "tasks": [ { same structure as built-in tasks } ]
-      }
-    YAML support requires PyYAML; falls back silently if unavailable.
-    This function is non-destructive: built-in TASKS are never modified.
-    """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    tasks_dir  = os.path.join(script_dir, "tasks")
-    if not os.path.isdir(tasks_dir):
-        return
-
-    # Attempt YAML import
-    try:
-        import yaml as _yaml
-        _has_yaml = True
-    except ImportError:
-        _has_yaml = False
-
-    patterns = [os.path.join(tasks_dir, "*.json")]
-    if _has_yaml:
-        patterns.append(os.path.join(tasks_dir, "*.yaml"))
-        patterns.append(os.path.join(tasks_dir, "*.yml"))
-
-    for pattern in patterns:
-        for filepath in sorted(glob.glob(pattern)):
-            try:
-                with open(filepath, encoding="utf-8") as f:
-                    if filepath.endswith(".json"):
-                        import json as _json
-                        data = _json.load(f)
-                    else:
-                        data = _yaml.safe_load(f)
-
-                # Support both a single plugin dict {} and an array of plugins []
-                entries = data if isinstance(data, list) else [data]
-
-                for entry in entries:
-                    domain = entry.get("domain", "").strip()
-                    tasks  = entry.get("tasks", [])
-                    if not domain or not tasks:
-                        continue
-
-                    # Assign unique IDs to avoid collision with built-in 1-100
-                    base_id = 10000 + len(PLUGIN_TASKS) * 100
-                    for i, t in enumerate(tasks):
-                        if "id" not in t:
-                            t["id"] = base_id + i
-                        # Ensure required fields have defaults
-                        t.setdefault("level", "easy")
-                        t.setdefault("accepted", [])
-                        t.setdefault("keywords", [])
-                        t.setdefault("check_type", "keyword")
-                        t.setdefault("setup", "")
-                        t.setdefault("verify", None)
-                        t.setdefault("concept", "")
-                        t.setdefault("hint", "")
-
-                    PLUGIN_TASKS[domain] = tasks
-                    _PLUGIN_META[domain] = {
-                        "name":        entry.get("name", domain),
-                        "description": entry.get("description", ""),
-                        "author":      entry.get("author", "unknown"),
-                        "file":        os.path.basename(filepath),
-                    }
-            except Exception as e:
-                # Never crash on bad plugin — just skip
-                print(f"  [plugin] Warning: failed to load {filepath}: {e}",
-                      file=sys.stderr)
-
-    # Detect duplicate task IDs across all loaded plugins
-    all_plugin_ids = [t["id"] for tasks in PLUGIN_TASKS.values()
-                      for t in tasks if isinstance(t.get("id"), int)]
-    _seen = set()
-    _duplicates = set()
-    for _pid in all_plugin_ids:
-        if _pid in _seen:
-            _duplicates.add(_pid)
-        _seen.add(_pid)
-    if _duplicates:
-        print(f"  [plugin] Warning: duplicate task IDs detected: {_duplicates}",
-              file=sys.stderr)
-
-def get_all_domains():
-    """Return built-in domains + plugin domains."""
-    return {**TASKS, **PLUGIN_TASKS}
-
-def get_domain_tasks(domain_name):
-    """Return tasks for a domain (built-in or plugin)."""
-    if domain_name in TASKS:
-        return TASKS[domain_name]
-    return PLUGIN_TASKS.get(domain_name, [])
-
-def is_plugin_domain(domain_name):
-    return domain_name in PLUGIN_TASKS
-
-# ─────────────────────────────────────────────────────────────
-# CHALLENGE MODE
-# ─────────────────────────────────────────────────────────────
-CHALLENGES = [
-    # ── Beginner ──────────────────────────────────────────────
-    {
-        "id": "C01",
-        "level": "beginner",
-        "title": "The Missing Config",
-        "description": "A web server refuses to start. The config directory exists but is missing its main file. Restore the situation.",
-        "steps": [
-            {
-                "prompt": "Step 1 — Create the directory /etc/webserver/ if it does not exist.",
-                "hint": "mkdir with -p creates parent dirs too.",
-                "accepted": ["mkdir -p /etc/webserver", "mkdir /etc/webserver"],
-                "keywords": ["mkdir"],
-                "setup": "",
-                "verify": lambda sb, rc, out, err: (os.path.isdir(os.path.join(sb, "etc", "webserver")) or rc == 0, "Directory must exist"),
-            },
-            {
-                "prompt": "Step 2 — Create an empty file called 'webserver.conf' inside that directory.",
-                "hint": "touch creates an empty file.",
-                "accepted": ["touch etc/webserver/webserver.conf", "touch webserver.conf"],
-                "keywords": ["touch", "webserver.conf"],
-                "setup": "mkdir -p etc/webserver",
-                "verify": lambda sb, rc, out, err: (
-                    os.path.isfile(os.path.join(sb, "etc", "webserver", "webserver.conf")) or
-                    os.path.isfile(os.path.join(sb, "webserver.conf")),
-                    "webserver.conf must exist"
-                ),
-            },
-            {
-                "prompt": "Step 3 — Set its permissions to owner read+write only (no group or other access).",
-                "hint": "chmod with octal 600.",
-                "accepted": ["chmod 600 etc/webserver/webserver.conf", "chmod 600 webserver.conf"],
-                "keywords": ["chmod", "600"],
-                "setup": "mkdir -p etc/webserver && touch etc/webserver/webserver.conf",
-                "verify": lambda sb, rc, out, err: (
-                    any(
-                        os.path.isfile(p) and oct(os.stat(p).st_mode)[-3:] == "600"
-                        for p in [
-                            os.path.join(sb, "etc", "webserver", "webserver.conf"),
-                            os.path.join(sb, "webserver.conf"),
-                        ] if os.path.exists(p)
-                    ),
-                    "File must have mode 600"
-                ),
-            },
-        ],
-    },
-    {
-        "id": "C02",
-        "level": "beginner",
-        "title": "Log Triage",
-        "description": "An app is spewing logs. Find and count the critical errors, then extract them to a separate file.",
-        "steps": [
-            {
-                "prompt": "Step 1 — Count how many lines in 'app.log' contain the word CRITICAL.",
-                "hint": "grep -c counts matching lines.",
-                "accepted": ["grep -c CRITICAL app.log", "grep -c 'CRITICAL' app.log"],
-                "keywords": ["grep", "-c", "CRITICAL", "app.log"],
-                "setup": "printf 'INFO ok\nCRITICAL disk full\nINFO ok\nCRITICAL oom kill\nCRITICAL segfault\n' > app.log",
-                "verify": lambda sb, rc, out, err: (rc == 0 and "3" in out, "Must output count 3"),
-            },
-            {
-                "prompt": "Step 2 — Extract all CRITICAL lines from 'app.log' into a new file called 'critical.log'.",
-                "hint": "grep with output redirection.",
-                "accepted": ["grep CRITICAL app.log > critical.log", "grep 'CRITICAL' app.log > critical.log"],
-                "keywords": ["grep", "CRITICAL", "app.log", "critical.log"],
-                "setup": "printf 'INFO ok\nCRITICAL disk full\nINFO ok\nCRITICAL oom kill\nCRITICAL segfault\n' > app.log",
-                "verify": lambda sb, rc, out, err: (
-                    os.path.isfile(os.path.join(sb, "critical.log")) and
-                    open(os.path.join(sb, "critical.log")).read().count("CRITICAL") == 3,
-                    "critical.log must contain exactly 3 CRITICAL lines"
-                ),
-            },
-            {
-                "prompt": "Step 3 — Show the 3rd line of 'critical.log' only.",
-                "hint": "Combine head and tail, or use sed with a line number.",
-                "accepted": ["sed -n '3p' critical.log", "head -3 critical.log | tail -1", "awk 'NR==3' critical.log"],
-                "keywords": ["critical.log"],
-                "setup": "printf 'CRITICAL disk full\nCRITICAL oom kill\nCRITICAL segfault\n' > critical.log",
-                "verify": lambda sb, rc, out, err: (rc == 0 and "segfault" in out, "Output must show the 3rd line containing 'segfault'"),
-            },
-        ],
-    },
-    # ── Intermediate ───────────────────────────────────────────
-    {
-        "id": "C03",
-        "level": "intermediate",
-        "title": "Broken Permissions Chain",
-        "description": "A shared project directory has wrong permissions throughout. Audit and fix the entire tree.",
-        "steps": [
-            {
-                "prompt": "Step 1 — Show the current permissions of 'project/' and all files inside it (long format, recursive).",
-                "hint": "ls -lR shows long format recursively.",
-                "accepted": ["ls -lR project", "ls -lR project/"],
-                "keywords": ["ls", "-lR", "project"],
-                "setup": "mkdir -p project/src project/docs && touch project/src/main.py project/docs/readme.txt && chmod 000 project/src/main.py",
-                "verify": lambda sb, rc, out, err: (rc == 0 and "main.py" in out, "Must list project/ contents recursively"),
-            },
-            {
-                "prompt": "Step 2 — Give the owner read+write+execute on 'project/' recursively, group read+execute, others nothing.",
-                "hint": "chmod -R 750 sets rwxr-x--- on all entries.",
-                "accepted": ["chmod -R 750 project", "chmod -R 750 project/"],
-                "keywords": ["chmod", "-R", "750", "project"],
-                "setup": "mkdir -p project/src project/docs && touch project/src/main.py project/docs/readme.txt",
-                "verify": lambda sb, rc, out, err: (
-                    rc == 0 and oct(os.stat(os.path.join(sb, "project")).st_mode)[-3:] == "750" and
-                    oct(os.stat(os.path.join(sb, "project", "src", "main.py")).st_mode)[-3:] == "750",
-                    "All entries must have mode 750"
-                ),
-            },
-            {
-                "prompt": "Step 3 — Set the setgid bit on 'project/' so new files inherit its group.",
-                "hint": "chmod g+s sets the setgid bit.",
-                "accepted": ["chmod g+s project", "chmod g+s project/"],
-                "keywords": ["chmod", "g+s", "project"],
-                "setup": "mkdir -p project/src && chmod 750 project",
-                "verify": lambda sb, rc, out, err: (
-                    bool(os.stat(os.path.join(sb, "project")).st_mode & stat.S_ISGID),
-                    "project/ must have setgid bit set"
-                ),
-            },
-            {
-                "prompt": "Step 4 — Find any world-writable files inside 'project/' (a security risk).",
-                "hint": "find with -perm -002 matches world-writable.",
-                "accepted": ["find project -perm -002", "find project/ -perm -002 -type f"],
-                "keywords": ["find", "project", "-perm", "-002"],
-                "setup": "mkdir -p project/src && touch project/src/backdoor.sh && chmod 777 project/src/backdoor.sh",
-                "verify": lambda sb, rc, out, err: (rc == 0 and "backdoor.sh" in out, "Must find backdoor.sh (world-writable)"),
-            },
-        ],
-    },
-    {
-        "id": "C04",
-        "level": "intermediate",
-        "title": "Rogue Process Hunt",
-        "description": "A process is consuming too much CPU and writing to suspicious files. Identify and neutralise it.",
-        "steps": [
-            {
-                "prompt": "Step 1 — List all running processes sorted by CPU usage (highest first).",
-                "hint": "ps aux sorted by %CPU, or use top -b -n1.",
-                "accepted": ["ps aux --sort=-%cpu", "ps aux --sort=-%CPU", "top -b -n1 | head -20", "ps aux | sort -rk3"],
-                "keywords": ["ps", "aux"],
-                "setup": "",
-                "verify": lambda sb, rc, out, err: (rc == 0 and "PID" in out, "Must show processes with PID column"),
-            },
-            {
-                "prompt": "Step 2 — Show all open files held by the process with PID 1 (use PID 1 as a safe substitute).",
-                "hint": "lsof -p shows open files for a PID.",
-                "accepted": ["lsof -p 1", "sudo lsof -p 1", "ls /proc/1/fd"],
-                "keywords": ["lsof", "-p"],
-                "setup": "",
-                "verify": lambda sb, rc, out, err: (rc == 0 or rc == 1, "lsof must run without crashing"),
-            },
-            {
-                "prompt": "Step 3 — Send SIGTERM to a process named 'suspicious' (it may not exist — that's fine).",
-                "hint": "pkill sends a signal to all matching process names.",
-                "accepted": ["pkill suspicious", "pkill -15 suspicious", "pkill -TERM suspicious"],
-                "keywords": ["pkill", "suspicious"],
-                "setup": "",
-                "verify": lambda sb, rc, out, err: (rc in (0, 1), "pkill must run; rc=1 means no match, which is acceptable"),
-            },
-            {
-                "prompt": "Step 4 — Show the OOM score of the current shell process to understand its memory priority.",
-                "hint": "Read /proc/self/oom_score.",
-                "accepted": ["cat /proc/self/oom_score", "cat /proc/$$/oom_score"],
-                "keywords": ["oom_score"],
-                "setup": "",
-                "verify": lambda sb, rc, out, err: (rc == 0 and bool(re.search(r'^\d+', out.strip())), "Must output a numeric OOM score"),
-            },
-        ],
-    },
-    # ── Advanced ───────────────────────────────────────────────
-    {
-        "id": "C05",
-        "level": "advanced",
-        "title": "Network Forensics",
-        "description": "Investigate active network connections, identify suspicious listeners, and lock them down.",
-        "steps": [
-            {
-                "prompt": "Step 1 — List all listening TCP ports with their process names.",
-                "hint": "ss -tulpn shows listening sockets with processes.",
-                "accepted": ["ss -tulpn", "ss -tlpn", "netstat -tulpn"],
-                "keywords": ["ss", "-tulpn"],
-                "setup": "",
-                "verify": lambda sb, rc, out, err: (rc == 0 and ("State" in out or "LISTEN" in out or "Recv-Q" in out), "Must show socket state table"),
-            },
-            {
-                "prompt": "Step 2 — Show the full routing table to understand packet flow.",
-                "hint": "ip route shows the kernel routing table.",
-                "accepted": ["ip route", "ip route show", "ip r", "route -n"],
-                "keywords": ["ip", "route"],
-                "setup": "",
-                "verify": lambda sb, rc, out, err: (rc == 0 and bool(re.search(r'\d+\.\d+\.\d+\.\d+|default', out)), "Must show routing entries"),
-            },
-            {
-                "prompt": "Step 3 — Block all incoming connections on port 4444 using iptables (a common backdoor port).",
-                "hint": "iptables -A INPUT -p tcp --dport 4444 -j DROP",
-                "accepted": ["iptables -A INPUT -p tcp --dport 4444 -j DROP", "sudo iptables -A INPUT -p tcp --dport 4444 -j DROP"],
-                "keywords": ["iptables", "4444", "DROP"],
-                "setup": "",
-                "verify": lambda sb, rc, out, err: (rc == 0, "iptables rule must be added successfully"),
-            },
-            {
-                "prompt": "Step 4 — Capture 10 packets on the loopback interface and display them (don't save to file).",
-                "hint": "tcpdump -i lo -c 10 captures 10 packets on loopback.",
-                "accepted": ["tcpdump -i lo -c 10", "sudo tcpdump -i lo -c 10", "tcpdump -c 10 -i lo"],
-                "keywords": ["tcpdump", "-c", "10"],
-                "setup": "",
-                "verify": lambda sb, rc, out, err: (rc in (0, 1, 2) and "tcpdump" in err + out or rc == 0, "tcpdump must attempt to capture"),
-            },
-            {
-                "prompt": "Step 5 — Check IP forwarding status and disable it if enabled.",
-                "hint": "Read /proc/sys/net/ipv4/ip_forward, then write 0 to disable.",
-                "accepted": ["cat /proc/sys/net/ipv4/ip_forward", "echo 0 > /proc/sys/net/ipv4/ip_forward", "sysctl -w net.ipv4.ip_forward=0"],
-                "keywords": ["ip_forward"],
-                "setup": "",
-                "verify": lambda sb, rc, out, err: (rc == 0, "Must access ip_forward successfully"),
-            },
-        ],
-    },
-    {
-        "id": "C06",
-        "level": "advanced",
-        "title": "Filesystem Archaeology",
-        "description": "Recover information from a corrupted environment: find deleted files, recover content, and repair permissions.",
-        "steps": [
-            {
-                "prompt": "Step 1 — Find all files modified in the last 5 minutes anywhere under /tmp.",
-                "hint": "find -mmin -5 matches files modified within 5 minutes.",
-                "accepted": ["find /tmp -mmin -5", "find /tmp -mmin -5 -type f"],
-                "keywords": ["find", "/tmp", "-mmin", "-5"],
-                "setup": "",
-                "verify": lambda sb, rc, out, err: (rc == 0, "find must run successfully"),
-            },
-            {
-                "prompt": "Step 2 — A file 'evidence.dat' exists but is empty. Write the text 'RECOVERED' into it using only the shell.",
-                "hint": "echo with output redirection writes to a file.",
-                "accepted": ["echo 'RECOVERED' > evidence.dat", "echo RECOVERED > evidence.dat", "printf 'RECOVERED\\n' > evidence.dat"],
-                "keywords": ["evidence.dat"],
-                "setup": "touch evidence.dat",
-                "verify": lambda sb, rc, out, err: (
-                    os.path.isfile(os.path.join(sb, "evidence.dat")) and
-                    "RECOVERED" in open(os.path.join(sb, "evidence.dat")).read(),
-                    "evidence.dat must contain the word RECOVERED"
-                ),
-            },
-            {
-                "prompt": "Step 3 — Create a hard link called 'evidence.bak' pointing to 'evidence.dat' (backup by inode sharing).",
-                "hint": "ln without -s creates a hard link.",
-                "accepted": ["ln evidence.dat evidence.bak"],
-                "keywords": ["ln", "evidence.dat", "evidence.bak"],
-                "setup": "echo 'RECOVERED' > evidence.dat",
-                "verify": lambda sb, rc, out, err: (
-                    os.path.isfile(os.path.join(sb, "evidence.bak")) and
-                    not os.path.islink(os.path.join(sb, "evidence.bak")) and
-                    os.stat(os.path.join(sb, "evidence.dat")).st_ino == os.stat(os.path.join(sb, "evidence.bak")).st_ino,
-                    "evidence.bak must be a hard link sharing evidence.dat's inode"
-                ),
-            },
-            {
-                "prompt": "Step 4 — Count the number of inodes used on the root filesystem.",
-                "hint": "df -i shows inode usage per filesystem.",
-                "accepted": ["df -i", "df -i /", "df --inodes", "df --inodes /"],
-                "keywords": ["df", "-i"],
-                "setup": "",
-                "verify": lambda sb, rc, out, err: (rc == 0 and ("Inode" in out or "IUsed" in out or "IFree" in out), "Must show inode statistics"),
-            },
-            {
-                "prompt": "Step 5 — Make 'evidence.dat' append-only so no one can overwrite its content (only add to it).",
-                "hint": "chattr +a sets the append-only attribute.",
-                "accepted": ["chattr +a evidence.dat", "sudo chattr +a evidence.dat"],
-                "keywords": ["chattr", "+a", "evidence.dat"],
-                "setup": "echo 'RECOVERED' > evidence.dat",
-                "verify": lambda sb, rc, out, err: (rc == 0 or "Operation not supported" in err, "chattr +a must run or filesystem limitation reported"),
-            },
-        ],
-    },
-]
-
-CHALLENGE_LEVEL_ORDER = ["beginner", "intermediate", "advanced"]
-CHALLENGE_LEVEL_COLORS = {
-    "beginner":     C.GREEN,
-    "intermediate": C.YELLOW,
-    "advanced":     C.RED,
-}
-
-def run_challenge_step(step: dict, user_cmd: str):
-    """
-    Execute one challenge step in a sandbox.
-    Returns same dict format as run_sandboxed_task().
-    """
-    # Wrap step as a minimal task dict for the sandbox
-    pseudo_task = {
-        "setup":    step.get("setup", ""),
-        "verify":   step.get("verify"),
-        "accepted": step.get("accepted", []),
-        "keywords": step.get("keywords", []),
-    }
-    return run_sandboxed_task(pseudo_task, user_cmd)
-
-def show_challenges(progress):
-    """Full challenge mode UI — multi-step scenarios with sandbox verification."""
-    while True:
-        clear()
-        print()
-        print(f"  {C.BOLD}{C.ORANGE}{'─'*55}{C.RESET}")
-        print(f"  {C.BOLD}{C.ORANGE}  {T('challenges_title')}{C.RESET}")
-        print(f"  {C.GRAY}  {T('challenges_sub')}{C.RESET}")
-        print(f"  {C.BOLD}{C.ORANGE}{'─'*55}{C.RESET}\n")
-
-        ch_progress = progress.get("challenges", {})
-
-        # Group by level
-        for lvl in CHALLENGE_LEVEL_ORDER:
-            col = CHALLENGE_LEVEL_COLORS.get(lvl, C.WHITE)
-            challenges_in_level = [c for c in CHALLENGES if c["level"] == lvl]
-            print(f"  {col}── {lvl.upper()} ──────────────────────────────────────{C.RESET}")
-            for c in challenges_in_level:
-                cid = c["id"]
-                done = ch_progress.get(cid, {}).get("completed", False)
-                steps_done = ch_progress.get(cid, {}).get("steps_done", 0)
-                total_steps = len(c["steps"])
-                marker = f"{C.GREEN}✓{C.RESET}" if done else f"{C.GRAY}○{C.RESET}"
-                step_str = f"{C.GRAY}({steps_done}/{total_steps} steps){C.RESET}" if not done else f"{C.GREEN}(complete){C.RESET}"
-                print(f"  {marker} {C.CYAN}{cid}{C.RESET}. {C.WHITE}{c['title']}{C.RESET}  {step_str}")
-                print(f"       {C.DIM}{c['description'][:70]}{C.RESET}")
-            print()
-
-        hr()
-        print(f"\n  {C.GRAY}b{C.RESET}. {T('back')}\n")
-        try:
-            choice = input(f"  {C.GREEN}❯{C.RESET} {T('choose_challenge', n=len(CHALLENGES))}: ").strip().upper()
-        except (KeyboardInterrupt, EOFError):
-            break
-
-        if choice in ("B", "BACK", ""):
-            break
-
-        # Find challenge by ID
-        challenge = next((c for c in CHALLENGES if c["id"] == choice), None)
-        if challenge is None:
-            try:
-                idx = int(choice) - 1
-                if 0 <= idx < len(CHALLENGES):
-                    challenge = CHALLENGES[idx]
-            except ValueError:
-                continue
-
-        if challenge:
-            _run_challenge(challenge, progress)
-
-def _run_challenge(challenge: dict, progress):
-    """Run a single multi-step challenge."""
-    cid = challenge["id"]
-    col = CHALLENGE_LEVEL_COLORS.get(challenge["level"], C.WHITE)
-    steps = challenge["steps"]
-    n_steps = len(steps)
-    ch_progress = progress.setdefault("challenges", {})
-    ch_entry    = ch_progress.setdefault(cid, {"completed": False, "steps_done": 0})
-
-    for step_idx, step in enumerate(steps):
-        step_num = step_idx + 1
-        while True:
-            clear()
-            print()
-            print(f"  {col}{'─'*60}{C.RESET}")
-            print(f"  {col}  {challenge['title']}  [{challenge['level'].upper()}]{C.RESET}")
-            print(f"  {C.GRAY}  {challenge['description']}{C.RESET}")
-            print(f"  {col}{'─'*60}{C.RESET}\n")
-            print(f"  {C.BOLD}{T('challenge_step', n=step_num, total=n_steps)}{C.RESET}")
-            print(f"\n  {C.WHITE}{step['prompt']}{C.RESET}\n")
-            print(f"  {C.DIM}hint | answer | b(back){C.RESET}\n")
-
-            try:
-                cmd = input(f"  {C.GREEN}$ {C.RESET}").strip()
-            except (KeyboardInterrupt, EOFError):
-                return
-
-            if not cmd:
-                continue
-            if cmd.lower() in ("b", "back"):
-                return
-            if cmd.lower() == "hint":
-                print(f"\n  {C.YELLOW}💡 {step['hint']}{C.RESET}\n")
-                continue
-            if cmd.lower() == "answer":
-                print(f"\n  {C.ORANGE}Answer: {C.BOLD}{step['accepted'][0]}{C.RESET}\n")
-                input(f"  {C.GRAY}[Enter] to continue...{C.RESET} ")
-                # Don't count as completed
-                break
-
-            print(f"  {C.DIM}⏳ Verifying...{C.RESET}", end="\r")
-            result = run_challenge_step(step, cmd)
-            print(" " * 40, end="\r")
-
-            if result["passed"]:
-                print(f"\n  {C.GREEN}{'─'*60}{C.RESET}")
-                print(f"  {C.GREEN}{T('challenge_pass')}{C.RESET}")
-                if result["message"].strip():
-                    print(f"  {C.DIM}{result['message'].strip()[:120]}{C.RESET}")
-                print(f"  {C.GREEN}{'─'*60}{C.RESET}\n")
-                ch_entry["steps_done"] = max(ch_entry.get("steps_done", 0), step_num)
-                save_progress(progress)
-                time.sleep(1)
-                break  # next step
-            else:
-                print(f"\n  {C.RED}{T('challenge_fail')}{C.RESET}  {C.GRAY}{T('attempt')}{C.RESET}")
-                if result["mode"] == "sandbox" and result["message"].strip():
-                    print(f"  {C.GRAY}{result['message'].strip()[:150]}{C.RESET}")
-                elif result["mode"] == "keyword":
-                    missing = [k for k in step.get("keywords", []) if k.lower() not in cmd.lower()]
-                    if missing:
-                        print(f"  {C.GRAY}{T('missing_keywords')} {', '.join(missing[:3])}{C.RESET}")
-                print()
-
-    # All steps passed
-    ch_entry["completed"] = True
-    ch_entry["steps_done"] = n_steps
-    save_progress(progress)
-    clear()
-    print()
-    print(f"  {C.BOLD}{C.GREEN}{'═'*60}{C.RESET}")
-    print(f"  {C.BOLD}{C.GREEN}  🏆 {T('challenge_complete')}{C.RESET}")
-    print(f"  {C.WHITE}  {challenge['title']}{C.RESET}")
-    print(f"  {C.BOLD}{C.GREEN}{'═'*60}{C.RESET}\n")
-    time.sleep(3)
-
-def show_plugins(progress):
-    """Show plugin domain browser."""
-    clear()
-    print()
-    print(f"  {C.BOLD}{C.PURPLE}  {T('plugins_title')}{C.RESET}\n")
-    hr()
-    print()
-
-    if not PLUGIN_TASKS:
-        print(f"  {C.GRAY}{T('plugins_none')}{C.RESET}")
-        print(f"  {C.DIM}  Create a tasks/ directory next to commandlab.py")
-        print(f"  and add JSON files with the task structure.{C.RESET}\n")
-        print(f"  {C.DIM}  Example: tasks/my_module.json{C.RESET}\n")
-        hr()
-        print()
-        input(f"  {C.GRAY}{T('press_enter')}{C.RESET}")
-        return
-
-    print(f"  {C.GREEN}{T('plugins_loaded', n=len(PLUGIN_TASKS))}{C.RESET}\n")
-    plugin_list = list(PLUGIN_TASKS.keys())
-    for i, domain in enumerate(plugin_list, 1):
-        meta = _PLUGIN_META.get(domain, {})
-        name = meta.get("name", domain)
-        desc = meta.get("description", "")
-        author = meta.get("author", "")
-        n_tasks = len(PLUGIN_TASKS[domain])
-        print(f"  {C.CYAN}{i}{C.RESET}. {C.BOLD}{name}{C.RESET}  {C.GRAY}({n_tasks} tasks, by {author}){C.RESET}")
-        if desc:
-            print(f"       {C.DIM}{desc[:70]}{C.RESET}")
-
-    print()
-    hr()
-    print(f"\n  {C.GRAY}b{C.RESET}. {T('back')}\n")
-
-    try:
-        choice = input(f"  {C.GREEN}❯{C.RESET} Choose plugin (1-{len(plugin_list)}): ").strip().lower()
-    except (KeyboardInterrupt, EOFError):
-        return
-
-    if choice in ("b", "back", ""):
-        return
-
-    try:
-        idx = int(choice) - 1
-        if 0 <= idx < len(plugin_list):
-            domain_name = plugin_list[idx]
-            # Reuse existing domain menu for plugin domains
-            _run_plugin_domain(domain_name, progress)
-    except ValueError:
-        pass
-
-def _run_plugin_domain(domain_name: str, progress):
-    """Run a plugin domain using the same task flow as built-in domains."""
-    while True:
-        tasks = get_domain_tasks(domain_name)
-        meta  = _PLUGIN_META.get(domain_name, {})
-        clear()
-        done_ids = set(progress.get("completed", []))
-        done = sum(1 for t in tasks if t["id"] in done_ids)
-        print(f"\n  {C.PURPLE}{T('plugin_domain')}{C.RESET} {C.BOLD}{C.WHITE}{meta.get('name', domain_name).upper()}{C.RESET}  {progress_bar(done, len(tasks), width=20)}\n")
-        hr()
-        print()
-        for i, t in enumerate(tasks, 1):
-            tid = t["id"]
-            marker = f"{C.GREEN}✓{C.RESET}" if tid in done_ids else f"{C.GRAY}○{C.RESET}"
-            col = DIFF_COLORS.get(t.get("level", "easy"), C.WHITE)
-            badge = f"{col}[{t.get('level','easy').upper()}]{C.RESET}"
-            print(f"  {marker} {C.DIM}{i:2d}{C.RESET}. {badge} {C.WHITE}{t.get('title','')}{C.RESET}")
-        print()
-        hr()
-        print(f"\n  {C.GRAY}b{C.RESET}. {T('back')}\n")
-        try:
-            choice = input(f"  {C.GREEN}❯{C.RESET} {T('choose_task')}: ").strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            break
-        if choice in ("b", "back", ""):
-            break
-        try:
-            idx = int(choice) - 1
-            if 0 <= idx < len(tasks):
-                result = show_task(tasks[idx], domain_name, progress)
-        except ValueError:
-            continue
-
-# ─────────────────────────────────────────────────────────────
-# PROGRESS STORAGE
-# ─────────────────────────────────────────────────────────────
-def get_progress_path():
-    home = os.path.expanduser("~")
-    config_dir = os.path.join(home, ".config", "commandlab")
-    os.makedirs(config_dir, exist_ok=True)
-    return os.path.join(config_dir, "progress.json")
-
-def load_progress():
-    path = get_progress_path()
-    if os.path.exists(path):
-        try:
-            with open(path) as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {"completed": [], "attempts": {}, "streaks": {}, "started": str(datetime.date.today())}
-
-def save_progress(progress):
-    with open(get_progress_path(), "w") as f:
-        json.dump(progress, f, indent=2)
-
-# ─────────────────────────────────────────────────────────────
-# ANSWER CHECKING
-# ─────────────────────────────────────────────────────────────
-def check_answer(task, answer):
-    answer = answer.strip()
-    if not answer:
-        return False, "empty"
-
-    answer_lower = answer.lower()
-
-    # Check against accepted answers (flexible match)
-    for acc in task["accepted"]:
-        acc_norm = acc.strip().lower()
-        if answer_lower == acc_norm:
-            return True, "exact"
-        # Normalize spaces and check core parts
-        if acc_norm.replace("  ", " ") == answer_lower.replace("  ", " "):
-            return True, "exact"
-
-    # Keyword-based check: all keywords must appear in the answer
-    keywords = [k.lower() for k in task.get("keywords", [])]
-    if keywords and all(kw in answer_lower for kw in keywords):
-        return True, "keyword"
-
-    return False, "wrong"
-
-# ─────────────────────────────────────────────────────────────
-# SANDBOX ENGINE
-# ─────────────────────────────────────────────────────────────
-
-# Thin last-resort blocklist kept only as a UI-level guard so that
-# obviously destructive commands are rejected with a clear message
-# *before* we even attempt to enter the sandbox.  The actual security
-# boundary is the chroot/namespace isolation in Sandbox._exec — this
-# list is NOT relied upon for containment.
-_BLOCKED_PATTERNS = [
-    (r'\bshutdown\b|\breboot\b|\bpoweroff\b|\bhalt\b', "system shutdown/reboot"),
-    (r':\(\)\s*\{.*\|.*:.*&.*\}',                      "fork bomb"),
-    (r'\bmkfs\b',                                       "disk formatting"),
-    (r'\bdd\b.*of=/dev/(sd[a-z]|hd[a-z]|nvme[0-9]|vd[a-z]|xvd[a-z])', "dd to block device"),
-]
-
-def _is_dangerous(cmd: str):
-    """Return (True, reason) if the command matches a blocked pattern."""
-    for pattern, reason in _BLOCKED_PATTERNS:
-        if re.search(pattern, cmd, re.IGNORECASE | re.DOTALL):
-            return True, reason
-    return False, None
-
-
-def _classifier_gate(cmd: str):
-    """
-    Run the command classifier and return an action dict:
-
-      {
-        "action":   "block" | "text_only" | "allow",
-        "checker":  "text checker" | "sandbox checker",
-        "decision": str,            # classifier's final_decision value
-        "reason":   str,            # human-readable explanation
-        "details":  str,            # optional obfuscation / per-command detail
-      }
-
-    If the classifier module is unavailable the function returns
-    action="allow" so the rest of the pipeline is unaffected.
-
-    Mapping (highest risk wins across all chained commands):
-      BLOCK        -> action="text_only"  checker="text checker"   (kernel/network/hardware — text compare only, never executed)
-      TEXT_ONLY    -> action="text_only"  checker="text checker"   (filesystem/package writes — text compare only)
-      SANDBOX      -> action="allow"      checker="sandbox checker"
-      SAFE_EXECUTE -> action="allow"      checker="sandbox checker"
-
-    Note: hard blocks (_is_dangerous) for fork-bombs / disk-wipes remain in
-    run_sandboxed_task() and are never overridden by this function.
-    """
-    if not _CLASSIFIER_OK:
-        return {
-            "action":   "allow",
-            "checker":  "sandbox checker",
-            "decision": "UNKNOWN",
-            "reason":   "classifier unavailable",
-            "details":  "",
-        }
-
-    result = _classify(cmd)
-    decision = result.final_decision.value   # str: SAFE_EXECUTE | SANDBOX | TEXT_ONLY | BLOCK
-
-    # Build a brief per-command detail string
-    details_parts = []
-    if result.obfuscation_flags:
-        details_parts.append("⚠ obfuscation: " + ", ".join(result.obfuscation_flags[:2]))
-    for cr in result.commands:
-        details_parts.append(f"{cr.base}→{cr.classification.value}")
-    details = "  ".join(details_parts)
-
-    if decision == "BLOCK":
-        # Risky/control commands are NOT hard-blocked.
-        # They are checked by text comparison only — never executed in the sandbox.
-        return {
-            "action":   "text_only",
-            "checker":  "text checker",
-            "decision": decision,
-            "reason":   "high-risk command — answer checked by text comparison only",
-            "details":  details,
-        }
-
-    if decision == "TEXT_ONLY":
-        return {
-            "action":   "text_only",
-            "checker":  "text checker",
-            "decision": decision,
-            "reason":   "command modifies filesystem/packages — text-only feedback",
-            "details":  details,
-        }
-
-    # SANDBOX or SAFE_EXECUTE → run normally
-    checker = "sandbox checker" if decision == "SANDBOX" else "sandbox checker"
-    return {
-        "action":   "allow",
-        "checker":  checker,
-        "decision": decision,
-        "reason":   "",
-        "details":  details,
-    }
-
-
-# ── Sandbox isolation strategy ─────────────────────────────────────────────
-#
-# Goal: give the subprocess access to standard Linux binaries (ls, grep, awk,
-# find, …) while preventing it from reading or writing *anything* on the real
-# host filesystem outside the per-task temp directory.
-#
-# Approach — "chroot jail with read-only bind mounts":
-#
-#   chroot_root/          ← ephemeral directory, torn down after every command
-#     usr/  (ro bind)     ← /usr from host (provides /bin, /sbin, /lib via symlinks)
-#     lib64/ (ro bind)    ← ELF interpreter on merged-usr systems
-#     tmp/  (tmpfs)       ← scratch space, lives only for the command duration
-#     proc/ (procfs)      ← needed by some tools (ps, top, etc.)
-#     dev/  (devtmpfs)    ← /dev/null, /dev/zero, /dev/urandom
-#     etc/  (empty dir)   ← prevents "no such file" crashes; no host files
-#     home/user/ (rw bind)← the task's writable sandbox directory (self.path)
-#
-#   The subprocess is launched as:
-#       chroot <chroot_root> /bin/bash -c "<cmd>"
-#   with HOME=/home/user and cwd=/home/user.
-#
-# Two execution paths are tried, in order:
-#
-#   1. Direct mount + chroot (requires CAP_SYS_ADMIN or root).
-#      Works when the tool is run as root or with the right capabilities.
-#
-#   2. unshare(1) —user —map-root-user —mount + chroot inside the new
-#      mount namespace.  This works for unprivileged users on kernels that
-#      allow unprivileged user namespaces (most modern distros; controlled by
-#      /proc/sys/kernel/unprivileged_userns_clone on older kernels).
-#
-#   3. Graceful degradation: if both fail (e.g. unshare is absent, or the
-#      kernel disables unprivileged namespaces), _exec falls back to the old
-#      cwd-only execution and emits a one-time warning so the operator knows
-#      the sandbox is running in reduced-security mode.
-
-def _find_bin(name: str, candidates: tuple) -> str:
-    """Return the first existing path from candidates, or just name as fallback."""
-    for path in candidates:
-        if os.path.isfile(path):
-            return path
-    return name
-
-# Absolute paths to privileged binaries — resolved once at import time.
-_MOUNT_BIN   = _find_bin("mount",   ("/bin/mount",  "/usr/bin/mount",  "/sbin/mount",  "/usr/sbin/mount"))
-_UMOUNT_BIN  = _find_bin("umount",  ("/bin/umount", "/usr/bin/umount", "/sbin/umount", "/usr/sbin/umount"))
-_CHROOT_BIN  = _find_bin("chroot",  ("/usr/sbin/chroot", "/sbin/chroot", "/bin/chroot", "/usr/bin/chroot"))
-_UNSHARE_BIN = _find_bin("unshare", ("/usr/bin/unshare", "/bin/unshare"))
-
-
-def _mount(*args):
-    """Run mount(8) with the given args; raise RuntimeError on failure."""
-    r = subprocess.run([_MOUNT_BIN] + list(args),
-                       capture_output=True, timeout=10)
-    if r.returncode != 0:
-        raise RuntimeError(
-            "mount " + " ".join(args) + " failed: " + r.stderr.decode(errors="replace").strip()
-        )
-
-
-def _build_chroot_root_unshare(workdir: str) -> str:
-    """
-    Like _build_chroot_root() but uses 'unshare --user --mount' to create a
-    private mount namespace so bind mounts succeed without root privileges.
-
-    We do this by launching a tiny Python helper inside the new namespace that:
-      1. Builds the chroot root with bind mounts (now possible as namespace-root).
-      2. Writes the chroot root path to stdout and then BLOCKS until stdin closes.
-      3. The parent reads the path and returns it.
-      4. When the Sandbox is cleaned up, the helper's stdin is closed (EOF),
-         it wakes up, runs teardown, and exits.
-
-    This keeps the mount namespace alive for the duration of the Sandbox session.
-    """
-    helper_code = r"""
-import os, sys, subprocess, tempfile, shutil, json
-
-MOUNT_BIN  = sys.argv[1]
-UMOUNT_BIN = sys.argv[2]
-CHROOT_BIN = sys.argv[3]
-workdir    = sys.argv[4]
-
-def do_mount(*args):
-    r = subprocess.run([MOUNT_BIN] + list(args), capture_output=True, timeout=10)
-    if r.returncode != 0:
-        raise RuntimeError(r.stderr.decode(errors="replace").strip())
-
-def teardown(root):
-    for sub in ("home/user", "etc/resolv.conf", "etc/ssl/certs",
-                "etc/alternatives", "dev", "proc", "tmp", "lib64", "usr"):
-        mnt = os.path.join(root, sub)
-        # resolv.conf is a file mount; isfile covers that case too
-        if os.path.exists(mnt):
-            subprocess.run([UMOUNT_BIN, mnt], capture_output=True, timeout=10)
-    shutil.rmtree(root, ignore_errors=True)
-
-root = tempfile.mkdtemp(prefix="cmdlab_chr_")
-try:
-    for d in ("usr", "lib64", "etc", "tmp", "proc", "dev", "home", "home/user"):
-        os.makedirs(os.path.join(root, d), exist_ok=True)
-    for lnk, tgt in (("bin","usr/bin"),("sbin","usr/sbin"),("lib","usr/lib")):
-        lp = os.path.join(root, lnk)
-        if not os.path.exists(lp):
-            os.symlink(tgt, lp)
-    do_mount("--bind", "-o", "ro", "/usr",  os.path.join(root, "usr"))
-    if os.path.isdir("/lib64"):
-        do_mount("--bind", "-o", "ro", "/lib64", os.path.join(root, "lib64"))
-    do_mount("-t", "tmpfs",    "tmpfs",    os.path.join(root, "tmp"))
-    do_mount("-t", "proc",     "proc",     os.path.join(root, "proc"))
-    do_mount("-t", "devtmpfs", "devtmpfs", os.path.join(root, "dev"))
-    if os.path.isdir("/etc/alternatives"):
-        os.makedirs(os.path.join(root, "etc", "alternatives"), exist_ok=True)
-        do_mount("--bind", "-o", "ro", "/etc/alternatives",
-                 os.path.join(root, "etc", "alternatives"))
-    if os.path.isfile("/etc/resolv.conf"):
-        dest = os.path.join(root, "etc", "resolv.conf")
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        open(dest, "w").close()          # file mount-point
-        do_mount("--bind", "-o", "ro", "/etc/resolv.conf", dest)
-    if os.path.isdir("/etc/ssl/certs"):
-        dest = os.path.join(root, "etc", "ssl", "certs")
-        os.makedirs(dest, exist_ok=True) # directory mount-point
-        do_mount("--bind", "-o", "ro", "/etc/ssl/certs", dest)
-    do_mount("--bind", workdir, os.path.join(root, "home", "user"))
-
-    # Signal readiness: write the root path + a sentinel JSON to stdout
-    sys.stdout.write(json.dumps({"root": root, "ok": True}) + "\n")
-    sys.stdout.flush()
-
-    # Block until parent closes our stdin (= Sandbox.cleanup() called)
-    sys.stdin.read()
-
-except Exception as exc:
-    sys.stdout.write(json.dumps({"root": root, "ok": False, "err": str(exc)}) + "\n")
-    sys.stdout.flush()
-    sys.stdin.read()
-finally:
-    teardown(root)
-"""
-
-    import subprocess as _sp
-    proc = _sp.Popen(
-        [_UNSHARE_BIN, "--user", "--map-root-user", "--mount",
-         "python3", "-c", helper_code,
-         _MOUNT_BIN, _UMOUNT_BIN, _CHROOT_BIN, workdir],
-        stdin=_sp.PIPE,
-        stdout=_sp.PIPE,
-        stderr=_sp.PIPE,
-    )
-    try:
-        # Read the JSON handshake (blocks until helper writes it)
-        line = proc.stdout.readline().decode(errors="replace").strip()
-        import json as _json
-        info = _json.loads(line)
-        if not info.get("ok"):
-            proc.stdin.close()
-            proc.wait(timeout=5)
-            raise RuntimeError(info.get("err", "unshare helper failed"))
-        chroot_root = info["root"]
-        # Attach proc to the chroot_root path so cleanup can kill it
-        _UNSHARE_PROCS[chroot_root] = proc
-        return chroot_root
-    except Exception:
-        proc.stdin.close()
-        proc.wait(timeout=5)
-        raise
-
-
-# Registry of live unshare helper processes keyed by chroot_root path.
-# _teardown_chroot_root() checks here and kills the helper when done.
-_UNSHARE_PROCS: dict = {}
-
-
-def _detect_sandbox_mode() -> str:
-
-    """
-    Probe which isolation mode is available.
-    Returns one of: "chroot_direct" | "chroot_unshare" | "fallback"
-    Result is cached in _SANDBOX_MODE after the first call.
-    """
-    # Can we mount directly? (root / CAP_SYS_ADMIN)
-    probe = tempfile.mkdtemp(prefix="cmdlab_probe_")
-    try:
-        r = subprocess.run(
-            [_MOUNT_BIN, "--bind", "-o", "ro", "/usr", probe],
-            capture_output=True, timeout=5,
-        )
-        if r.returncode == 0:
-            subprocess.run([_UMOUNT_BIN, probe], capture_output=True, timeout=5)
-            return "chroot_direct"
-    except Exception:
-        pass
-    finally:
-        shutil.rmtree(probe, ignore_errors=True)
-
-    # Can we use unshare --user --mount?
-    try:
-        r = subprocess.run(
-            [_UNSHARE_BIN, "--user", "--map-root-user", "--mount",
-             "echo", "ok"],
-            capture_output=True, timeout=5,
-        )
-        if r.returncode == 0:
-            return "chroot_unshare"
-    except FileNotFoundError:
-        pass
-    except Exception:
-        pass
-
-    return "fallback"
-
-
-_SANDBOX_MODE: str = ""          # filled lazily on first Sandbox._exec call
-_SANDBOX_MODE_WARNED: bool = False
-
-
-def _get_sandbox_mode() -> str:
-    global _SANDBOX_MODE
-    if not _SANDBOX_MODE:
-        _SANDBOX_MODE = _detect_sandbox_mode()
-    return _SANDBOX_MODE
-
-
-# ── chroot root builder / teardown ──────────────────────────────────────────
-
-def _build_chroot_root(workdir: str) -> str:
-    """
-    Create a minimal chroot root directory tree with bind mounts already
-    applied.  The caller is responsible for calling _teardown_chroot_root()
-    afterwards (even on error).
-
-    workdir is bind-mounted read-write at <root>/home/user inside the chroot.
-
-    Returns the path to the chroot root.
-    Raises RuntimeError if any critical mount step fails.
-    """
-    root = tempfile.mkdtemp(prefix="cmdlab_chr_")
-    try:
-        # Directories that will exist inside the chroot
-        for d in ("usr", "lib64", "etc", "tmp", "proc", "dev",
-                  "home", os.path.join("home", "user")):
-            os.makedirs(os.path.join(root, d), exist_ok=True)
-
-        # /bin /sbin /lib are symlinks on merged-usr systems (Debian ≥ 12,
-        # Ubuntu ≥ 22.04).  Recreate those symlinks inside the chroot so that
-        # paths like /bin/bash resolve correctly after the chroot(2) call.
-        for link, target in (("bin", "usr/bin"), ("sbin", "usr/sbin"), ("lib", "usr/lib")):
-            lpath = os.path.join(root, link)
-            if not os.path.exists(lpath):
-                os.symlink(target, lpath)
-
-        # Bind-mount /usr read-only (gives us all standard binaries + libs)
-        _mount("--bind", "-o", "ro", "/usr", os.path.join(root, "usr"))
-
-        # /lib64 holds the ELF interpreter (ld-linux-x86-64.so.2) on x86_64.
-        # It may not exist on all architectures; skip silently if absent.
-        if os.path.isdir("/lib64"):
-            _mount("--bind", "-o", "ro", "/lib64", os.path.join(root, "lib64"))
-
-        # Fresh tmpfs for /tmp — writes go to memory, not the host /tmp.
-        _mount("-t", "tmpfs", "tmpfs", os.path.join(root, "tmp"))
-
-        # /proc — needed by ps, top, /proc/self/fd, etc.
-        _mount("-t", "proc", "proc", os.path.join(root, "proc"))
-
-        # /dev — needed for /dev/null, /dev/urandom redirection, etc.
-        _mount("-t", "devtmpfs", "devtmpfs", os.path.join(root, "dev"))
-
-        # /etc/alternatives — Debian/Ubuntu distros symlink many /usr/bin tools
-        # (awk, cc, python3, etc.) through this directory.  Bind-mounting it
-        # read-only ensures those symlink chains resolve correctly inside the jail.
-        if os.path.isdir("/etc/alternatives"):
-            os.makedirs(os.path.join(root, "etc", "alternatives"), exist_ok=True)
-            _mount("--bind", "-o", "ro", "/etc/alternatives",
-                   os.path.join(root, "etc", "alternatives"))
-
-        # /etc/resolv.conf — DNS resolver configuration.
-        # Bind-mount the host file read-only so tools like curl, wget, ping,
-        # and dig can resolve hostnames inside the sandbox.
-        if os.path.isfile("/etc/resolv.conf"):
-            dest = os.path.join(root, "etc", "resolv.conf")
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            open(dest, "w").close()          # create file mount-point
-            _mount("--bind", "-o", "ro", "/etc/resolv.conf", dest)
-
-        # /etc/ssl/certs — CA certificate bundle.
-        # Required for SSL/TLS verification by curl, wget, Python's ssl module,
-        # etc.  Bind-mounted read-only; the sandbox cannot modify host certs.
-        if os.path.isdir("/etc/ssl/certs"):
-            dest = os.path.join(root, "etc", "ssl", "certs")
-            os.makedirs(dest, exist_ok=True) # create directory mount-point
-            _mount("--bind", "-o", "ro", "/etc/ssl/certs", dest)
-
-        # The task's writable work directory, visible as /home/user
-        _mount("--bind", workdir, os.path.join(root, "home", "user"))
-
-        return root
-
-    except Exception:
-        # Best-effort teardown before re-raising
-        _teardown_chroot_root(root)
-        raise
-
-
-def _teardown_chroot_root(root: str) -> None:
-    """
-    Tear down the chroot root.
-
-    For unshare-backed sessions the mount namespace lives in the helper
-    process; we just close its stdin (EOF = signal to stop blocking) and
-    wait for it to umount + delete the tree itself.
-
-    For direct-mount sessions we umount each sub-mount in reverse order
-    then delete the tree ourselves.
-    """
-    if root in _UNSHARE_PROCS:
-        proc = _UNSHARE_PROCS.pop(root)
-        try:
-            proc.stdin.close()
-            proc.wait(timeout=10)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-        return   # helper already deleted the tree
-
-    # Direct-mount session: unmount and clean up here.
-    # Unmount in reverse dependency order.  resolv.conf and ssl/certs must
-    # come before etc/alternatives (all under etc/) to avoid EBUSY.
-    for subdir in ("home/user", "etc/resolv.conf", "etc/ssl/certs",
-                   "etc/alternatives", "dev", "proc", "tmp", "lib64", "usr"):
-        mnt = os.path.join(root, subdir)
-        if os.path.isdir(mnt):
-            subprocess.run([_UMOUNT_BIN, mnt],
-                           capture_output=True, timeout=10)
-    shutil.rmtree(root, ignore_errors=True)
-
-
-
-class Sandbox:
-    """
-    Isolated execution environment for a single task session.
-
-    Lifecycle:
-      with Sandbox(task) as sb:
-          sb.setup()              # runs task["setup"] script if present
-          ok, out, err = sb.run(user_cmd)
-          passed = sb.verify()   # runs task["verify"] function
-      # __exit__ calls sb.cleanup() automatically
-
-    Directory layout (from the subprocess's point of view):
-      /home/user/    <- cwd and $HOME; the ONLY writable location
-      /usr/          <- host /usr, read-only bind mount (all standard binaries)
-      /bin /sbin /lib <- symlinks -> usr/...  (merged-usr compatibility)
-      /lib64/        <- host /lib64, read-only (ELF interpreter)
-      /tmp/          <- fresh tmpfs; discarded on cleanup
-      /proc/         <- procfs
-      /dev/          <- devtmpfs
-      /etc/resolv.conf (ro bind) <- host DNS config; enables curl/wget/ping/dig
-      /etc/ssl/certs/  (ro bind) <- host CA bundle; enables HTTPS verification
-
-    Security model:
-      * chroot(2) prevents the subprocess from accessing ANY host path that
-        is not explicitly bind-mounted inside the jail.  /etc/passwd, /root,
-        /home/otheruser, /var, etc. do not exist inside the sandbox.
-      * All system bind mounts (/usr, /lib64) are read-only — the process
-        can use every standard binary but cannot modify them.
-      * The ONLY writable mount is /home/user (== self.path on the host).
-        /tmp is a fresh tmpfs discarded when the sandbox is torn down.
-      * A hard per-command timeout kills the subprocess on expiry.
-      * A thin UI-level blocklist (_is_dangerous) rejects obviously
-        destructive shell constructs before the command reaches the jail.
-
-    The chroot root is built once in __enter__ / setup and torn down in
-    cleanup / __exit__, so files created by setup() persist across run()
-    calls within the same session.
-
-    Graceful degradation:
-      If neither direct-mount nor unshare-based chroot is available _exec
-      falls back to legacy cwd-only mode and prints a one-time warning.
-    """
-
-    TIMEOUT = 15
-    ENV_BASE = {
-        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "TERM":  "xterm-256color",
-        "SHELL": "/bin/bash",
-        "LANG":  "C.UTF-8",
-    }
-
-    def __init__(self, task: dict):
-        self.task          = task
-        self.path: str     = ""   # host-side writable work dir (self.path == /home/user inside)
-        self._chroot_root  = ""   # host-side chroot root; "" when not yet built
-        self._last_stdout  = ""
-        self._last_stderr  = ""
-        self._last_rc      = -1
-
-    # ── context manager ────────────────────────────────────────
-    def __enter__(self):
-        self.path = tempfile.mkdtemp(prefix="cmdlab_")
-        self._build_jail()
-        return self
-
-    def __exit__(self, *_):
-        self.cleanup()
-
-    # ── public API ─────────────────────────────────────────────
-    def setup(self) -> bool:
-        """Run the task's setup script inside the sandbox. Returns True on success."""
-        script = self.task.get("setup", "").strip()
-        if not script:
-            return True
-        script = script.replace("$SANDBOX", "/home/user")
-        # Mark as setup so _run_fallback bypasses the classifier gate —
-        # setup scripts are developer-controlled, not user input.
-        self._in_setup = True
-        try:
-            rc, _, err = self._exec(script)
-        finally:
-            self._in_setup = False
-        if rc != 0:
-            self._last_stderr = f"[setup error rc={rc}] {err}"
-        return rc == 0
-
-    def run(self, user_cmd: str):
-        """
-        Execute the user's command in the sandbox.
-        Returns (returncode, stdout, stderr).
-        """
-        dangerous, reason = _is_dangerous(user_cmd)
-        if dangerous:
-            return -99, "", f"BLOCKED: {reason}"
-
-        mode = _get_sandbox_mode()
-        if mode in ("chroot_direct", "chroot_unshare"):
-            cmd = user_cmd.replace("$SANDBOX", "/home/user")
-        else:
-            cmd = user_cmd.replace("$SANDBOX", self.path)
-
-        rc, out, err = self._exec(cmd)
-        self._last_rc     = rc
-        self._last_stdout = out
-        self._last_stderr = err
-        return rc, out, err
-
-    def verify(self) -> tuple:
-        """
-        Run the task's verify function/script to check if the goal was met.
-        Returns (passed: bool, message: str).
-
-        Verify callables receive the host-side self.path so they can use
-        os.path.isfile / os.listdir without needing to know about the chroot.
-        """
-        verify = self.task.get("verify")
-        if verify is None:
-            return None, "fallback"
-
-        if callable(verify):
-            try:
-                result = verify(
-                    self.path,
-                    self._last_rc,
-                    self._last_stdout,
-                    self._last_stderr,
-                )
-                if isinstance(result, tuple):
-                    return result[0], result[1] if len(result) > 1 else ""
-                return bool(result), ""
-            except Exception as e:
-                return False, f"verify error: {e}"
-
-        if isinstance(verify, str):
-            script = verify.replace("$SANDBOX", self.path)
-            rc, out, err = self._exec(script)
-            return rc == 0, out.strip() or err.strip()
-
-        return False, "unknown verify type"
-
-    def cleanup(self):
-        """Tear down the chroot jail and remove the work directory."""
-        self._teardown_jail()
-        if self.path and os.path.isdir(self.path):
-            shutil.rmtree(self.path, ignore_errors=True)
-        self.path = ""
-
-    # ── jail lifecycle ─────────────────────────────────────────
-    def _build_jail(self):
-        """
-        Create the chroot root with bind mounts.  Called once from __enter__.
-        On failure we fall back to cwd-only mode (self._chroot_root stays "").
-        """
-        mode = _get_sandbox_mode()
-        if mode == "chroot_direct":
-            try:
-                self._chroot_root = _build_chroot_root(self.path)
-            except RuntimeError:
-                self._chroot_root = ""  # graceful degradation
-        # For chroot_unshare mode the jail is built inside each _exec call
-        # (the unshare child handles setup+exec+teardown atomically).
-
-    def _teardown_jail(self):
-        """Unmount and remove the chroot root if it was built directly."""
-        if self._chroot_root:
-            _teardown_chroot_root(self._chroot_root)
-            self._chroot_root = ""
-
-    # ── internal executor ──────────────────────────────────────
-    def _exec(self, cmd: str):
-        """
-        Run cmd via bash inside the appropriate isolation level.
-
-          chroot_direct  -> already-mounted chroot root in self._chroot_root
-          chroot_unshare -> new unshare child builds+runs+tears-down its own jail
-          fallback       -> legacy cwd-only (warns once)
-        """
-        mode = _get_sandbox_mode()
-
-        if mode == "chroot_direct":
-            if self._chroot_root:
-                return self._run_in_chroot(self._chroot_root, cmd)
-            # Jail failed to build; fall through to fallback
-        elif mode == "chroot_unshare":
-            rc, out, err = self._exec_via_unshare(cmd)
-            if rc != -3:   # -3 means infrastructure failure (mount/chroot failed), not a command result
-                return rc, out, err
-            # unshare sandbox failed to initialize (e.g. proc/devtmpfs mount denied)
-            # fall through to fallback below
-
-        # ── fallback ──────────────────────────────────────────
-        global _SANDBOX_MODE_WARNED
-        if not _SANDBOX_MODE_WARNED:
-            _SANDBOX_MODE_WARNED = True
-            sys.stderr.write(
-                "\n[CommandLab] WARNING: chroot isolation is unavailable on this system.\n"
-                "  Sandbox is running in reduced-security mode (cwd-only).\n"
-                "  For full isolation run as root, grant CAP_SYS_ADMIN,\n"
-                "  or enable unprivileged user namespaces:\n"
-                "    sudo sysctl -w kernel.unprivileged_userns_clone=1\n\n"
-            )
-        return self._run_fallback(cmd)
-
-    def _run_in_chroot(self, chroot_root: str, cmd: str):
-        """Execute bash inside the pre-mounted chroot root."""
-        env = {**self.ENV_BASE, "HOME": "/home/user", "SANDBOX": "/home/user"}
-        # chroot resets the process root to /, so relative paths would resolve
-        # from / rather than /home/user.  Prefix every command with a cd so
-        # the working directory is the writable sandbox dir inside the jail.
-        wrapped = "cd /home/user && " + cmd
-        try:
-            result = subprocess.run(
-                [_CHROOT_BIN, chroot_root, "/bin/bash", "-c", wrapped],
-                cwd=os.path.join(chroot_root, "home", "user"),
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=self.TIMEOUT,
-            )
-            return result.returncode, result.stdout, result.stderr
-        except subprocess.TimeoutExpired:
-            return -1, "", f"Command timed out after {self.TIMEOUT}s"
-        except FileNotFoundError as exc:
-            return -2, "", f"Executor not found: {exc}"
-        except Exception as exc:
-            return -3, "", str(exc)
-
-    def _exec_via_unshare(self, cmd: str):
-        """
-        For unprivileged users: spawn a new user+mount namespace, build the
-        chroot root inside it, run the command, and tear down — all in one
-        child process.  stdout/stderr are returned via a JSON envelope on the
-        last line of the child's stdout.
-        """
-        work    = self.path
-        timeout = self.TIMEOUT
-        env_json = json.dumps({**self.ENV_BASE, "HOME": "/home/user", "SANDBOX": "/home/user"})
-
-        inner = r"""
-import os, sys, json, subprocess, tempfile, shutil
-
-work        = sys.argv[1]
-cmd         = sys.argv[2]
-env         = json.loads(sys.argv[3])
-timeout     = int(sys.argv[4])
-MOUNT_BIN   = sys.argv[5] if len(sys.argv) > 5 else "mount"
-UMOUNT_BIN  = sys.argv[6] if len(sys.argv) > 6 else "umount"
-CHROOT_BIN  = sys.argv[7] if len(sys.argv) > 7 else "chroot"
-
-def mount(*args):
-    r = subprocess.run([MOUNT_BIN] + list(args), capture_output=True, timeout=10)
-    if r.returncode != 0:
-        raise RuntimeError(r.stderr.decode(errors="replace").strip())
-
-def teardown(root):
-    for sub in ("home/user", "etc/resolv.conf", "etc/ssl/certs",
-                "etc/alternatives", "dev", "proc", "tmp", "lib64", "usr"):
-        mnt = os.path.join(root, sub)
-        if os.path.exists(mnt):  # covers both file and dir mounts
-            subprocess.run([UMOUNT_BIN, "-l", mnt], capture_output=True, timeout=10)
-    shutil.rmtree(root, ignore_errors=True)
-
-root = tempfile.mkdtemp(prefix="cmdlab_chr_")
-try:
-    for d in ("usr", "lib64", "etc", "tmp", "proc", "dev", "home", "home/user"):
-        os.makedirs(os.path.join(root, d), exist_ok=True)
-    for lnk, tgt in (("bin","usr/bin"),("sbin","usr/sbin"),("lib","usr/lib")):
-        lp = os.path.join(root, lnk)
-        if not os.path.exists(lp):
-            os.symlink(tgt, lp)
-    mount("--bind", "-o", "ro", "/usr",  os.path.join(root, "usr"))
-    if os.path.isdir("/lib64"):
-        mount("--bind", "-o", "ro", "/lib64", os.path.join(root, "lib64"))
-    mount("-t", "tmpfs",    "tmpfs",    os.path.join(root, "tmp"))
-    mount("-t", "proc",     "proc",     os.path.join(root, "proc"))
-    mount("-t", "devtmpfs", "devtmpfs", os.path.join(root, "dev"))
-    etc_alt = "/etc/alternatives"
-    if os.path.isdir(etc_alt):
-        os.makedirs(os.path.join(root, "etc", "alternatives"), exist_ok=True)
-        mount("--bind", "-o", "ro", etc_alt, os.path.join(root, "etc", "alternatives"))
-    if os.path.isfile("/etc/resolv.conf"):
-        dest = os.path.join(root, "etc", "resolv.conf")
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        open(dest, "w").close()          # file mount-point
-        mount("--bind", "-o", "ro", "/etc/resolv.conf", dest)
-    if os.path.isdir("/etc/ssl/certs"):
-        dest = os.path.join(root, "etc", "ssl", "certs")
-        os.makedirs(dest, exist_ok=True) # directory mount-point
-        mount("--bind", "-o", "ro", "/etc/ssl/certs", dest)
-    mount("--bind", work, os.path.join(root, "home", "user"))
-    try:
-        wrapped = "cd /home/user && " + cmd
-        r = subprocess.run(
-            [CHROOT_BIN, root, "/bin/bash", "-c", wrapped],
-            cwd=os.path.join(root, "home", "user"),
-            env=env, capture_output=True, text=True, timeout=timeout,
-        )
-        result = {"rc": r.returncode, "out": r.stdout, "err": r.stderr}
-    except subprocess.TimeoutExpired:
-        result = {"rc": -1, "out": "", "err": f"Command timed out after {timeout}s"}
-    except Exception as exc:
-        result = {"rc": -3, "out": "", "err": str(exc)}
-finally:
-    teardown(root)
-
-print(json.dumps(result))
-"""
-        try:
-            r = subprocess.run(
-                [
-                    _UNSHARE_BIN, "--user", "--map-root-user", "--mount",
-                    "python3", "-c", inner,
-                    work, cmd, env_json, str(timeout),
-                    _MOUNT_BIN, _UMOUNT_BIN, _CHROOT_BIN,
-                ],
-                capture_output=True, text=True,
-                timeout=timeout + 10,
-            )
-            lines = r.stdout.strip().splitlines()
-            for line in reversed(lines):
-                try:
-                    d = json.loads(line)
-                    prefix = lines[:lines.index(line)]
-                    extra  = "\n".join(prefix)
-                    return (
-                        d["rc"],
-                        (extra + "\n" + d["out"]).lstrip("\n") if extra else d["out"],
-                        d["err"],
-                    )
-                except (json.JSONDecodeError, ValueError):
-                    continue
-            return -3, "", r.stderr or r.stdout or "unshare execution failed"
-        except subprocess.TimeoutExpired:
-            return -1, "", f"Command timed out after {self.TIMEOUT}s"
-        except Exception as exc:
-            return -3, "", str(exc)
-
-    def _run_fallback(self, cmd: str):
-        """Legacy cwd-only executor used when chroot is unavailable.
-
-        SAFE/INSPECT commands execute in self.path (the session work directory)
-        so that files created by setup() are visible when run() executes.
-        MODIFY/CONTROL commands are blocked — no isolation is available.
-        """
-        # Show isolation warning once per session
-        if not getattr(self, '_fallback_warning_shown', False):
-            self._fallback_warning_shown = True
-            print("\n[WARNING] Running without full sandbox isolation."
-                  " Dangerous commands are blocked.\n")
-
-        # Use the classifier to decide whether to execute or block.
-        # Setup scripts are developer-controlled (not user input) — skip the gate.
-        if not getattr(self, '_in_setup', False):
-            gate = _classifier_gate(cmd)
-            if gate["action"] != "allow":
-                return 1, "", "Blocked in fallback mode: command modifies system state."
-
-        # FIX C: Execute in self.path so setup() files are visible to run() commands.
-        cwd = self.path if self.path and os.path.isdir(self.path) else None
-
-        # FIX D: Background commands (&) cause the shell to return immediately, but
-        # the spawned process inherits the stdout/stderr PIPE and keeps it open until
-        # it exits — making communicate() wait the full lifetime of the process.
-        # Fix: route background I/O to DEVNULL so there is no pipe to wait on.
-        is_background = cmd.strip().endswith('&') or ' & ' in cmd
-        if is_background:
-            try:
-                result = subprocess.run(
-                    cmd, shell=True, cwd=cwd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=3,
-                )
-                return result.returncode, "", ""
-            except subprocess.TimeoutExpired:
-                return 0, "", ""   # shell launched the background job — treat as success
-            except Exception as exc:
-                return -3, "", str(exc)
-
-        try:
-            result = subprocess.run(
-                cmd, shell=True, cwd=cwd,
-                capture_output=True, text=True,
-                timeout=self.TIMEOUT,
-            )
-            return result.returncode, result.stdout, result.stderr
-        except subprocess.TimeoutExpired:
-            return -1, "", f"Command timed out after {self.TIMEOUT}s"
-        except Exception as exc:
-            return -3, "", str(exc)
-
-
-def run_sandboxed_task(task: dict, user_cmd: str):
-    """
-    High-level entry point used by show_task().
-
-    Returns a dict:
-      {
-        "mode":    "sandbox" | "keyword" | "blocked",
-        "passed":  bool,
-        "rc":      int,
-        "stdout":  str,
-        "stderr":  str,
-        "message": str,   # human-readable feedback
-        "checker": str,   # "text checker" | "sandbox checker"
-        "clf_decision": str,  # classifier's final_decision value
-      }
-    """
-    # ── 1. _is_dangerous pre-screen (fork bombs, disk wipes, etc.) ──
-    # These are routed to text-only checking — never executed in the sandbox.
-    dangerous, reason = _is_dangerous(user_cmd)
-    if dangerous:
-        passed, match_type = check_answer(task, user_cmd)
-        return {
-            "mode": "keyword", "passed": passed,
-            "rc": 0, "stdout": "", "stderr": "",
-            "message": match_type,
-            "checker": "text checker",
-            "clf_decision": "BLOCK",
-        }
-
-    # ── 2. Classifier gate ─────────────────────────────────────────
-    gate = _classifier_gate(user_cmd)
-
-    if gate["action"] == "text_only":
-        # BLOCK or TEXT_ONLY decision: check by text comparison only, never run in sandbox
-        passed, match_type = check_answer(task, user_cmd)
-        msg = match_type
-        if gate["details"]:
-            msg += f"  [{gate['details']}]"
-        return {
-            "mode": "keyword", "passed": passed,
-            "rc": 0, "stdout": "", "stderr": "",
-            "message": msg,
-            "checker": gate["checker"],
-            "clf_decision": gate["decision"],
-        }
-
-    # ── 3. Normal execution path (SAFE_EXECUTE or SANDBOX) ─────────
-    has_sandbox = bool(task.get("setup") or task.get("verify"))
-
-    if not has_sandbox:
-        # Pure keyword fallback — no sandbox needed
-        passed, match_type = check_answer(task, user_cmd)
-        return {
-            "mode": "keyword", "passed": passed,
-            "rc": 0, "stdout": "", "stderr": "",
-            "message": match_type,
-            "checker": gate["checker"],
-            "clf_decision": gate["decision"],
-        }
-
-    with Sandbox(task) as sb:
-        sb.setup()
-        rc, stdout, stderr = sb.run(user_cmd)
-
-        if rc == -99:
-            # Sandbox refused to execute — fall back to text comparison
-            passed, match_type = check_answer(task, user_cmd)
-            return {
-                "mode": "keyword", "passed": passed,
-                "rc": 0, "stdout": "", "stderr": "",
-                "message": match_type,
-                "checker": "text checker",
-                "clf_decision": "BLOCK",
-            }
-
-        passed, vmsg = sb.verify()
-
-        if passed is None:
-            # verify returned fallback signal — use keyword matching
-            passed, match_type = check_answer(task, user_cmd)
-            return {
-                "mode": "keyword", "passed": passed,
-                "rc": rc, "stdout": stdout, "stderr": stderr,
-                "message": match_type,
-                "checker": gate["checker"],
-                "clf_decision": gate["decision"],
-            }
-
-        # Build a human-readable message from command output
-        msg = ""
-        if stdout.strip():
-            lines = stdout.strip().splitlines()
-            msg = "\n".join(f"  {C.DIM}{l}{C.RESET}" for l in lines[:8])
-            if len(lines) > 8:
-                msg += f"\n  {C.GRAY}... ({len(lines)-8} more lines){C.RESET}"
-        if stderr.strip() and not passed:
-            msg += f"\n  {C.RED}stderr: {stderr.strip()[:200]}{C.RESET}"
-        if vmsg and not passed:
-            msg += f"\n  {C.GRAY}{vmsg}{C.RESET}"
-
-        return {
-            "mode": "sandbox", "passed": passed,
-            "rc": rc, "stdout": stdout, "stderr": stderr,
-            "message": msg,
-            "checker": gate["checker"],
-            "clf_decision": gate["decision"],
-        }
-LOGO = f"""
-{C.GREEN}  ____ ___  __  __ __  __    _    _   _ ____  _        _    ____  {C.RESET}
-{C.GREEN} / ___/ _ \\|  \\/  |  \\/  |  / \\  | \\ | |  _ \\| |      / \\  | __ ){C.RESET}
-{C.GREEN}| |  | | | | |\\/| | |\\/| | / _ \\ |  \\| | | | | |     / _ \\ |  _ \\{C.RESET}
-{C.GREEN}| |__| |_| | |  | | |  | |/ ___ \\| |\\  | |_| | |___ / ___ \\| |_) |{C.RESET}
-{C.GREEN} \\____\\___/|_|  |_|_|  |_/_/   \\_\\_| \\_|____/|_____/_/   \\_\\____/ {C.RESET}
-{C.DIM}  [ command-line learning toolkit ]{C.RESET}
-"""
-
-DIFF_COLORS = {
-    "easy":   C.GREEN,
-    "medium": C.YELLOW,
-    "hard":   C.ORANGE,
-    "insane": C.RED,
-}
-
-DOMAIN_ICONS = {
-    "files":       "📁",
-    "viewing":     "👁 ",
-    "permissions": "🔐",
-    "processes":   "⚙️ ",
-    "networking":  "🌐",
-}
-
-# Difficulty levels in order — each locks the next
-LEVEL_ORDER = ["easy", "medium", "hard", "insane"]
-
-def get_level_tasks(domain_name, level):
-    """Return all tasks in a domain at a given difficulty level."""
-    tasks = TASKS.get(domain_name) or PLUGIN_TASKS.get(domain_name, [])
-    return [t for t in tasks if t["level"] == level]
-
-def is_level_unlocked(domain_name, level, progress):
-    """
-    A level is unlocked if all tasks in the PREVIOUS level are completed.
-    'easy' is always unlocked.
-    """
-    completed_ids = set(progress.get("completed", []))
-    idx = LEVEL_ORDER.index(level)
-    if idx == 0:
-        return True  # easy is always open
-    prev_level = LEVEL_ORDER[idx - 1]
-    prev_tasks = get_level_tasks(domain_name, prev_level)
-    return all(t["id"] in completed_ids for t in prev_tasks)
-
-def get_task_lock_status(task, domain_name, progress):
-    """Return True if this specific task is accessible (its level is unlocked)."""
-    return is_level_unlocked(domain_name, task["level"], progress)
-
-def clear():
-    os.system("clear")
-
-def hr(char="─", color=C.GRAY):
-    w = min(term_width(), 90)
-    print(f"{color}{char * w}{C.RESET}")
-
-def box(lines, color=C.BLUE, padding=2):
-    w = min(term_width() - 4, 86)
-    pad = " " * padding
-    print(f"{color}┌{'─' * (w)}┐{C.RESET}")
-    for line in lines:
-        visible = C.strip(line)
-        spaces = w - len(visible) - padding * 2
-        if spaces < 0:
-            spaces = 0
-        print(f"{color}│{C.RESET}{pad}{line}{' ' * spaces}{pad}{color}│{C.RESET}")
-    print(f"{color}└{'─' * (w)}┘{C.RESET}")
-
-def diff_badge(level):
-    color = DIFF_COLORS.get(level, C.WHITE)
-    return f"{color}[{level.upper()}]{C.RESET}"
-
-def progress_bar(done, total, width=30, color=C.GREEN):
-    if total == 0:
-        return ""
-    filled = int(width * done / total)
-    bar = "█" * filled + "░" * (width - filled)
-    pct = int(100 * done / total)
-    return f"{color}{bar}{C.RESET} {C.BOLD}{done}/{total}{C.RESET} {C.GRAY}({pct}%){C.RESET}"
-
-def wrap_text(text, width=80, indent=""):
-    return textwrap.fill(text, width=width, initial_indent=indent, subsequent_indent=indent)
-
-def domain_stats(domain_name, progress):
-    tasks = TASKS.get(domain_name) or PLUGIN_TASKS.get(domain_name, [])
-    completed_ids = set(progress.get("completed", []))
-    done = sum(1 for t in tasks if t["id"] in completed_ids)
-    total = len(tasks)
-    by_level = {}
-    for t in tasks:
-        lvl = t["level"]
-        if lvl not in by_level:
-            by_level[lvl] = {"done": 0, "total": 0, "unlocked": is_level_unlocked(domain_name, lvl, progress)}
-        by_level[lvl]["total"] += 1
-        if t["id"] in completed_ids:
-            by_level[lvl]["done"] += 1
-    return done, total, by_level
-
-# ─────────────────────────────────────────────────────────────
-# SCREENS
-# ─────────────────────────────────────────────────────────────
-def show_main_menu(progress):
-    clear()
-    print(LOGO)
-    completed_ids = set(progress.get("completed", []))
-    total_tasks = sum(len(v) for v in TASKS.values())
-    total_done = len(completed_ids)
-
-    print(f"  {C.BOLD}{T('total_progress')}:{C.RESET}  {progress_bar(total_done, total_tasks, width=28)}")
-    print()
-
-    hr()
-    print(f"\n  {C.BOLD}{C.WHITE}{T('domains')}{C.RESET}\n")
-
-    domain_list = list(TASKS.keys())
-    for i, domain in enumerate(domain_list, 1):
-        icon = DOMAIN_ICONS[domain]
-        done, total, _ = domain_stats(domain, progress)
-        bar = progress_bar(done, total, width=18)
-        locked = done == 0 and total_done == 0 and i > 1
-        status = f"{C.GRAY}[{T('locked_level')}]{C.RESET}" if locked else bar
-        print(f"  {C.CYAN}{i}{C.RESET}. {icon} {C.BOLD}{domain.upper():14s}{C.RESET}  {status}")
-
-    # Plugin domains
-    for i, (domain, tasks) in enumerate(PLUGIN_TASKS.items(), len(domain_list) + 1):
-        meta = _PLUGIN_META.get(domain, {})
-        done = sum(1 for t in tasks if t["id"] in completed_ids)
-        total = len(tasks)
-        bar = progress_bar(done, total, width=18)
-        print(f"  {C.CYAN}{i}{C.RESET}. 🔌 {C.BOLD}{meta.get('name', domain).upper():14s}{C.RESET}  {bar}  {C.GRAY}[plugin]{C.RESET}")
-
-    print()
-    hr()
-
-    # Extra menu row
-    ch_done = sum(1 for c in CHALLENGES if progress.get("challenges", {}).get(c["id"], {}).get("completed", False))
-    ch_total = len(CHALLENGES)
-    print(f"\n  {C.ORANGE}c{C.RESET}. ⚔  {T('challenges')}  {C.GRAY}({ch_done}/{ch_total}){C.RESET}"
-          f"    {C.PURPLE}p{C.RESET}. 🔌 {T('plugins')}"
-          f"    {C.CYAN}l{C.RESET}. 🌐 {T('language')}")
-    print(f"\n  {C.GRAY}s{C.RESET}. {T('stats')}    {C.GRAY}r{C.RESET}. {T('reset')}    {C.GRAY}q{C.RESET}. {T('quit')}\n")
-
-    choice = input(f"  {C.GREEN}❯{C.RESET} {T('choose_domain')}: ").strip().lower()
-    return choice, domain_list
-
-def show_domain_menu(domain_name, progress):
-    clear()
-    icon = DOMAIN_ICONS.get(domain_name, "🔌")
-    completed_ids = set(progress.get("completed", []))
-    done, total, by_level = domain_stats(domain_name, progress)
-
-    print(f"\n  {icon} {C.BOLD}{C.WHITE}{domain_name.upper()}{C.RESET}  {progress_bar(done, total, width=24)}\n")
-    hr()
-    print()
-
-    # Level summary with lock icons
-    for level in LEVEL_ORDER:
-        if level in by_level:
-            s = by_level[level]
-            col = DIFF_COLORS[level]
-            unlocked = s["unlocked"]
-            if unlocked:
-                bar = progress_bar(s["done"], s["total"], width=12, color=col)
-                lock_icon = f"{C.GREEN}🔓{C.RESET}" if s["done"] == s["total"] else f"  "
-                print(f"  {lock_icon} {col}{level.upper():8s}{C.RESET}  {bar}")
-            else:
-                prev = LEVEL_ORDER[LEVEL_ORDER.index(level) - 1]
-                prev_s = by_level.get(prev, {})
-                remaining = prev_s.get("total", 0) - prev_s.get("done", 0)
-                lock_msg = T("complete_first", prev=prev.upper(), n=remaining)
-                print(f"  🔒 {C.GRAY}{level.upper():8s}  {T('locked_level')} — {lock_msg}{C.RESET}")
-
-    print()
-    hr()
-    print(f"\n  {C.BOLD}{T('tasks')}{C.RESET}\n")
-
-    tasks = TASKS.get(domain_name, PLUGIN_TASKS.get(domain_name, []))
-    current_level = None
-    for t in tasks:
-        tid = t["id"]
-        lvl = t["level"]
-        unlocked = is_level_unlocked(domain_name, lvl, progress)
-
-        if lvl != current_level:
-            current_level = lvl
-            col = DIFF_COLORS.get(lvl, C.WHITE)
-            if unlocked:
-                print(f"\n  {col}── {lvl.upper()} ──────────────────────────────────────────{C.RESET}")
-            else:
-                print(f"\n  {C.GRAY}── {lvl.upper()} ──────────────────────────────────── 🔒 {T('locked_level')}{C.RESET}")
-
-        local_num = tasks.index(t) + 1
-
-        if not unlocked:
-            print(f"  {C.GRAY}  {local_num:2d}. 🔒 {task_field(t, 'title')}{C.RESET}")
-        else:
-            done_marker = f"{C.GREEN}✓{C.RESET}" if tid in completed_ids else f"{C.GRAY}○{C.RESET}"
-            attempts = progress.get("attempts", {}).get(str(tid), 0)
-            att_str = f" {C.GRAY}({attempts}✗){C.RESET}" if attempts > 0 and tid not in completed_ids else ""
-            print(f"  {done_marker} {C.DIM}{local_num:2d}{C.RESET}. {C.WHITE}{task_field(t, 'title')}{C.RESET}{att_str}")
-
-    print()
-    hr()
-    print(f"\n  {C.GRAY}b{C.RESET}. {T('back')}    {C.GRAY}r{C.RESET}. {T('random_task')}\n")
-
-    choice = input(f"  {C.GREEN}❯{C.RESET} {T('choose_task')}: ").strip().lower()
-    return choice, tasks
-
-def task_field(task, field):
-    """Return the Arabic version of a task field when AR mode is active."""
-    if _LANG == "ar":
-        ar_val = task.get(f"{field}_ar", "").strip()
-        if ar_val:
-            return ar_val
-    return task.get(field, "")
-
-def show_task(task, domain_name, progress):
-    completed_ids = set(progress.get("completed", []))
-    already_done = task["id"] in completed_ids
-    level = task["level"]
-    diff_color = DIFF_COLORS.get(level, C.WHITE)
-    has_sandbox = bool(task.get("setup") is not None or task.get("verify") is not None)
-
-    # Enforce level lock
-    if not is_level_unlocked(domain_name, level, progress):
-        clear()
-        print(f"\n  {C.RED}{T('level_locked')}{C.RESET}")
-        prev_level = LEVEL_ORDER[LEVEL_ORDER.index(level)-1] if level in LEVEL_ORDER and LEVEL_ORDER.index(level) > 0 else level
-        print(f"  {C.GRAY}{T('complete_prev', prev=prev_level.upper())}{C.RESET}\n")
-        time.sleep(2)
-        return "back"
-
-    clear()
-    print()
-
-    icon = DOMAIN_ICONS.get(domain_name, "🔌")
-    status_str = f"{C.GREEN}[COMPLETED]{C.RESET}" if already_done else ""
-    mode_badge = (f"  {C.CYAN}[SANDBOX]{C.RESET}" if has_sandbox else f"  {C.GRAY}[KEYWORD]{C.RESET}")
-
-    # ── Classifier preview badge ──────────────────────────────
-    # Show what the classifier would say about the task's primary accepted answer
-    # so the player knows up-front whether it's a text checker or sandbox checker.
-    _clf_badge = ""
-    if _CLASSIFIER_OK and task.get("accepted"):
-        _sample_cmd = task["accepted"][0]
-        _gate = _classifier_gate(_sample_cmd)
-        _decision_label = _gate["decision"]
-        _checker_label  = _gate["checker"]
-        if _checker_label == "text checker":
-            _clf_badge = f"  {C.YELLOW}[TEXT CHECKER · {_decision_label}]{C.RESET}"
-        else:
-            _clf_badge = f"  {C.CYAN}[SANDBOX CHECKER · {_decision_label}]{C.RESET}"
-
-    print(f"  {icon} Task #{task['id']}  {diff_badge(level)}{mode_badge}{_clf_badge}  {status_str}")
-    print()
-
-    box([
-        f"{C.BOLD}{C.WHITE}{task_field(task, 'title')}{C.RESET}",
-        "",
-        *[f"{C.WHITE}{line}{C.RESET}" for line in textwrap.wrap(task_field(task, "question"), width=78)],
-    ], color=diff_color)
-
-    if has_sandbox and task.get("setup", "").strip():
-        print()
-        print(f"  {C.CYAN}🔬 {T('sandbox_env')}{C.RESET}")
-        setup_lines = [l.strip() for l in task["setup"].split("&&") if l.strip()]
-        for sl in setup_lines[:3]:
-            print(f"     {C.DIM}$ {sl}{C.RESET}")
-        if len(setup_lines) > 3:
-            print(f"     {C.DIM}... (+{len(setup_lines)-3} more){C.RESET}")
-
-    print()
-
-    hint_shown = False
-    answer_revealed = False
-    attempts = 0
-
-    while True:
-        if answer_revealed:
-            print(f"  {C.DIM}{T('practice_prompt')}{C.RESET}")
-        else:
-            print(f"  {C.DIM}{T('commands_help')}{C.RESET}")
-        print()
-
-        try:
-            answer = input(f"  {C.GREEN}$ {C.RESET}").strip()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return "back"
-
-        if not answer:
-            continue
-        if answer.lower() in ("b", "back"):
-            return "back"
-        if answer.lower() == "skip":
-            return "skip"
-
-        # HINT
-        if answer.lower() == "hint":
-            if not hint_shown:
-                print()
-                print(f"  {C.YELLOW}{T('hint_label')}{C.RESET}  {C.WHITE}{task_field(task, 'hint')}{C.RESET}")
-                print()
-                hint_shown = True
-            else:
-                print()
-                print(f"  {C.YELLOW}{T('hint_more')}{C.RESET}")
-                print()
-            continue
-
-        # CONCEPT
-        if answer.lower() == "concept":
-            print()
-            print(f"  {C.PURPLE}{T('concept_label')}{C.RESET}")
-            for line in textwrap.wrap(task_field(task, "concept"), width=78):
-                print(f"     {C.WHITE}{line}{C.RESET}")
-            print()
-            continue
-
-        # ANSWER REVEAL
-        if answer.lower() == "answer":
-            print()
-            print(f"  {C.ORANGE}{'─' * 60}{C.RESET}")
-            print(f"  {C.ORANGE}{T('answer_revealed')}{C.RESET}")
-            print(f"  {C.ORANGE}{'─' * 60}{C.RESET}")
-            print()
-            print(f"  {C.BOLD}{C.WHITE}{T('answer_label')}{C.RESET}")
-            for i, acc in enumerate(task["accepted"], 1):
-                marker = f"{C.CYAN}${C.RESET}" if i == 1 else f"{C.GRAY}or${C.RESET}"
-                print(f"     {marker} {C.BOLD}{acc}{C.RESET}")
-            print()
-            print(f"  {C.PURPLE}{T('concept_label')}{C.RESET}")
-            for line in textwrap.wrap(task_field(task, "concept"), width=78):
-                print(f"     {C.DIM}{line}{C.RESET}")
-            print()
-            print(f"  {C.ORANGE}{'─' * 60}{C.RESET}")
-
-            if "revealed" not in progress:
-                progress["revealed"] = []
-            if task["id"] not in progress["revealed"]:
-                progress["revealed"].append(task["id"])
-            if task["id"] in progress.get("completed", []):
-                progress["completed"].remove(task["id"])
-            save_progress(progress)
-
-            answer_revealed = True
-            print()
-            try:
-                next_action = input(f"  {C.GRAY}{T('next_task_prompt')}{C.RESET} ").strip().lower()
-            except (KeyboardInterrupt, EOFError):
-                return "back"
-            if next_action in ("n", "next"):
-                return "next"
-            elif next_action in ("b", "back"):
-                return "back"
-            print()
-            continue
-
-        # SANDBOX / KEYWORD CHECK
-        attempts += 1
-        if has_sandbox:
-            print(f"  {C.DIM}{T('running_sandbox')}{C.RESET}", end="\r")
-
-        result = run_sandboxed_task(task, answer)
-
-        if has_sandbox:
-            print(" " * 40, end="\r")
-
-        if "attempts" not in progress:
-            progress["attempts"] = {}
-        if str(task["id"]) not in progress["attempts"]:
-            progress["attempts"][str(task["id"])] = 0
-        if not result["passed"]:
-            progress["attempts"][str(task["id"])] += 1
-            save_progress(progress)
-
-        correct = result["passed"]
-        mode = result["mode"]
-        checker_label = result.get("checker", "sandbox checker")
-        clf_decision  = result.get("clf_decision", "")
-
-        # BLOCKED
-        if mode == "blocked":
-            print()
-            checker_label = result.get("checker", "text checker")
-            clf_dec = result.get("clf_decision", "")
-            clf_info = f"  {C.GRAY}[{checker_label.upper()} · {clf_dec}]{C.RESET}" if clf_dec else ""
-            print(f"  {C.RED}{T('blocked')} {result['message']}{C.RESET}{clf_info}")
-            print(f"  {C.GRAY}{T('not_permitted')}{C.RESET}")
-            print()
-            continue
-
-        # CORRECT
-        if correct:
-            print()
-            print(f"  {C.GREEN}{'─' * 60}{C.RESET}")
-
-            if answer_revealed:
-                print(f"  {C.YELLOW}{T('correct_revealed')}{C.RESET}")
-                print(f"  {C.GRAY}{T('peek_note')}{C.RESET}")
-            elif already_done:
-                print(f"  {C.GREEN}{T('already_done')}{C.RESET}")
-            else:
-                if mode == "sandbox":
-                    print(f"  {C.GREEN}{T('correct_sandbox')}{C.RESET}  {C.CYAN}[{checker_label.upper()}]{C.RESET}")
-                else:
-                    print(f"  {C.GREEN}{T('correct_keyword')}{C.RESET}  {C.YELLOW}[{checker_label.upper()}]{C.RESET}")
-                progress["completed"].append(task["id"])
-                if "revealed" in progress and task["id"] in progress["revealed"]:
-                    progress["revealed"].remove(task["id"])
-                save_progress(progress)
-
-                for lvl in LEVEL_ORDER:
-                    if not is_level_unlocked(domain_name, lvl, progress):
-                        if is_level_unlocked(domain_name, lvl, progress):
-                            print()
-                            print(f"  {C.BOLD}{C.GREEN}{T('unlocked', level=lvl.upper())}{C.RESET}")
-                        break
-
-            if mode == "sandbox" and result["message"].strip():
-                print()
-                print(f"  {C.DIM}{T('cmd_output')}{C.RESET}")
-                print(result["message"])
-
-            print()
-            print(f"  {C.PURPLE}{T('concept_label')}{C.RESET}")
-            for line in textwrap.wrap(task_field(task, "concept"), width=78):
-                print(f"     {C.DIM}{line}{C.RESET}")
-            print()
-            print(f"  {C.GREEN}{'─' * 60}{C.RESET}")
-            print()
-
-            try:
-                next_action = input(f"  {C.GRAY}{T('next_back')}{C.RESET} ").strip().lower()
-            except (KeyboardInterrupt, EOFError):
-                return "back"
-            if next_action in ("n", "next"):
-                return "next"
-            elif next_action in ("b", "back"):
-                return "back"
-            return "next"
-
-        # WRONG
-        else:
-            print()
-            if mode == "sandbox":
-                print(f"  {C.RED}{T('wrong_sandbox')}{C.RESET}  {C.GRAY}{T('attempt')}{attempts}  [{checker_label.upper()}]{C.RESET}")
-                if result["stdout"].strip():
-                    lines = result["stdout"].strip().splitlines()[:5]
-                    print(f"  {C.DIM}stdout:{C.RESET}")
-                    for l in lines:
-                        print(f"    {C.DIM}{l}{C.RESET}")
-                if result["stderr"].strip():
-                    print(f"  {C.RED}stderr: {result['stderr'].strip()[:200]}{C.RESET}")
-                if result["message"].strip():
-                    print(f"  {C.GRAY}{T('verifier_says')} {result['message'].strip()[:200]}{C.RESET}")
-            elif mode == "keyword":
-                print(f"  {C.RED}{T('wrong_keyword')}{C.RESET}  {C.GRAY}{T('attempt')}{attempts}. {T('try_hint')}{C.RESET}")
-                answer_lower = answer.lower()
-                missing = [k for k in task.get("keywords", []) if k.lower() not in answer_lower]
-                matched = [k for k in task.get("keywords", []) if k.lower() in answer_lower]
-                if matched and missing:
-                    print(f"  {C.GRAY}{T('missing_keywords')} {', '.join(missing[:3])}{C.RESET}")
-                elif not matched:
-                    print(f"  {C.GRAY}{T('try_hint')}{C.RESET}")
-            print()
-
-def show_stats(progress):
-    clear()
-    print()
-    print(f"  {C.BOLD}{C.WHITE}{T('your_stats')}{C.RESET}\n")
-    hr()
-    print()
-
-    completed_ids = set(progress.get("completed", []))
-    revealed_ids  = set(progress.get("revealed", []))
-    total = sum(len(v) for v in TASKS.values())
-    done = len(completed_ids)
-
-    print(f"  {C.BOLD}{T('total')}{C.RESET}  {progress_bar(done, total, width=30)}")
-    if revealed_ids:
-        print(f"  {C.ORANGE}{T('revealed_count')} {len(revealed_ids)}{C.RESET}")
-    print()
-
-    for domain in TASKS:
-        d, t, by_level = domain_stats(domain, progress)
-        icon = DOMAIN_ICONS[domain]
-        print(f"  {icon} {domain.upper():14s}  {progress_bar(d, t, width=20)}")
-        for level in LEVEL_ORDER:
-            if level in by_level:
-                s = by_level[level]
-                col = DIFF_COLORS[level]
-                unlocked = s["unlocked"]
-                lock_str = "" if unlocked else f"  {C.GRAY}🔒 {T('locked_level')}{C.RESET}"
-                rev = sum(1 for t2 in TASKS[domain] if t2["level"] == level and t2["id"] in revealed_ids)
-                rev_str = f"  {C.ORANGE}({rev} revealed){C.RESET}" if rev > 0 else ""
-                print(f"       {col}{level:8s}{C.RESET}  {s['done']}/{s['total']}{rev_str}{lock_str}")
-        print()
-
-    # Challenge stats
-    ch_progress = progress.get("challenges", {})
-    if ch_progress:
-        ch_done = sum(1 for c in CHALLENGES if ch_progress.get(c["id"], {}).get("completed", False))
-        print(f"  ⚔  {T('challenges'):14s}  {progress_bar(ch_done, len(CHALLENGES), width=20, color=C.ORANGE)}")
-        print()
-
-    # Plugin stats
-    for domain, tasks in PLUGIN_TASKS.items():
-        meta = _PLUGIN_META.get(domain, {})
-        d = sum(1 for t in tasks if t["id"] in completed_ids)
-        t = len(tasks)
-        print(f"  🔌 {meta.get('name', domain)[:14]:14s}  {progress_bar(d, t, width=20, color=C.PURPLE)}")
-    if PLUGIN_TASKS:
-        print()
-
-    # Attempts info
-    attempts = progress.get("attempts", {})
-    if attempts:
-        total_wrong = sum(attempts.values())
-        print(f"  {C.GRAY}{T('wrong_attempts')} {total_wrong}{C.RESET}")
-        hardest = sorted(attempts.items(), key=lambda x: x[1], reverse=True)[:3]
-        if hardest:
-            print(f"  {C.GRAY}{T('hardest_tasks')}{C.RESET}")
-            for tid, count in hardest:
-                for domain_tasks in TASKS.values():
-                    for t in domain_tasks:
-                        if str(t["id"]) == str(tid):
-                            print(f"    #{t['id']} {task_field(t, 'title')} — {count} wrong attempts")
-    print()
-    hr()
-    print()
-    input(f"  {C.GRAY}{T('press_enter')}{C.RESET}")
-
-# ─────────────────────────────────────────────────────────────
-# MAIN LOOP
-# ─────────────────────────────────────────────────────────────
-def main():
-    # Check terminal supports ANSI
-    if not sys.stdout.isatty():
-        for attr in vars(C):
-            if not attr.startswith("_"):
-                setattr(C, attr, "")
-
-    # ── Language selection on first run ──────────────────────
-    progress = load_progress()
-    if "language" not in progress:
-        lang = select_language()
-        progress["language"] = lang
-        save_progress(progress)
-    else:
-        set_language(progress.get("language", "en"))
-
-    # ── Load external plugins ────────────────────────────────
-    _load_plugins()
-
-    while True:
-        choice, domain_list = show_main_menu(progress)
-
-        # ── Quit ────────────────────────────────────────────
-        if choice in ("q", "quit", "exit"):
-            clear()
-            print(f"\n  {C.GREEN}{T('goodbye')}{C.RESET}\n")
-            sys.exit(0)
-
-        # ── Reset progress ──────────────────────────────────
-        if choice == "r":
-            lang = progress.get("language", "en")
-            progress = {"completed": [], "attempts": {}, "streaks": {}, "started": str(datetime.date.today()), "language": lang}
-            save_progress(progress)
-            print(f"\n  {C.YELLOW}{T('progress_reset')}{C.RESET}")
-            time.sleep(1)
-            continue
-
-        # ── Stats ────────────────────────────────────────────
-        if choice == "s":
-            show_stats(progress)
-            continue
-
-        # ── Challenges ───────────────────────────────────────
-        if choice == "c":
-            show_challenges(progress)
-            continue
-
-        # ── Plugins ──────────────────────────────────────────
-        if choice == "p":
-            show_plugins(progress)
-            continue
-
-        # ── Language switch ───────────────────────────────────
-        if choice == "l":
-            new_lang = "ar" if _LANG == "en" else "en"
-            set_language(new_lang)
-            progress["language"] = new_lang
-            save_progress(progress)
-            continue
-
-        # ── Plugin domain by number ───────────────────────────
-        all_domains = list(TASKS.keys()) + list(PLUGIN_TASKS.keys())
-        try:
-            domain_idx = int(choice) - 1
-            if domain_idx < 0 or domain_idx >= len(all_domains):
-                continue
-        except ValueError:
-            continue
-
-        domain_name = all_domains[domain_idx]
-        tasks_for_domain = get_domain_tasks(domain_name)
-
-        # Domain loop
-        while True:
-            task_choice, tasks = show_domain_menu(domain_name, progress)
-
-            if task_choice in ("b", "back"):
-                break
-
-            if task_choice == "r":
-                import random
-                completed_ids = set(progress.get("completed", []))
-                unlocked_undone = [
-                    t for t in tasks
-                    if t["id"] not in completed_ids
-                    and is_level_unlocked(domain_name, t["level"], progress)
-                ]
-                if not unlocked_undone:
-                    unlocked_undone = [
-                        t for t in tasks
-                        if is_level_unlocked(domain_name, t["level"], progress)
-                    ]
-                if unlocked_undone:
-                    task = random.choice(unlocked_undone)
-                else:
-                    task = random.choice(tasks)
-                result = show_task(task, domain_name, progress)
-                continue
-
-            try:
-                task_idx = int(task_choice) - 1
-                if task_idx < 0 or task_idx >= len(tasks):
-                    continue
-            except ValueError:
-                continue
-
-            # Enforce lock
-            selected_task = tasks[task_idx]
-            if not is_level_unlocked(domain_name, selected_task["level"], progress):
-                clear()
-                prev_level = LEVEL_ORDER[LEVEL_ORDER.index(selected_task["level"]) - 1]
-                prev_tasks = get_level_tasks(domain_name, prev_level)
-                completed_ids = set(progress.get("completed", []))
-                remaining = [t for t in prev_tasks if t["id"] not in completed_ids]
-                print(f"\n  {C.RED}{T('level_locked')}{C.RESET}")
-                print(f"  {C.GRAY}{T('complete_prev', prev=prev_level.upper())}{C.RESET}")
-                print(f"  {C.GRAY}{T('need_tasks', n=len(remaining), prev=prev_level.upper())}{C.RESET}\n")
-                time.sleep(2)
-                continue
-
-            # Task navigation loop
-            current_idx = task_idx
-            while True:
-                task = tasks[current_idx]
-                if not is_level_unlocked(domain_name, task["level"], progress):
-                    clear()
-                    prev_level = LEVEL_ORDER[LEVEL_ORDER.index(task["level"]) - 1]
-                    print(f"\n  {C.YELLOW}{T('next_locked', prev=prev_level.upper())}{C.RESET}\n")
-                    time.sleep(2)
-                    break
-                result = show_task(task, domain_name, progress)
-
-                if result == "back":
-                    break
-                elif result in ("next", "skip"):
-                    current_idx += 1
-                    if current_idx >= len(tasks):
-                        clear()
-                        completed_ids = set(progress.get("completed", []))
-                        done = sum(1 for t in tasks if t["id"] in completed_ids)
-                        if done == len(tasks):
-                            print(f"\n  {C.GREEN}{T('domain_complete', domain=domain_name.upper())}{C.RESET}\n")
-                        else:
-                            print(f"\n  {C.CYAN}{T('domain_progress', done=done, total=len(tasks))}{C.RESET}\n")
-                        time.sleep(2)
-                        break
-                else:
-                    break
-
-if __name__ == "__main__":
-    main()

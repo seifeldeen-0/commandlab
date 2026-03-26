@@ -65,9 +65,6 @@ CommandLab integrates `command_classifier.py`, a standalone risk classification 
 
 The classifier accounts for obfuscation patterns (`eval`, `$(...)`, backtick substitution), sensitive path access (`/proc`, `/sys`, `/dev`, `/etc/shadow`), argument-based escalation (`sed -i`, `find -exec`, `dd of=/dev/sda`), and shell interpreter invocations with arguments.
 
-### Challenge Mode
-Beyond individual tasks, CommandLab includes a **Challenge Mode** featuring multi-step situational scenarios. Each challenge presents a real-world problem that requires the learner to chain multiple commands across sequential steps, with per-step verification.
-
 ### Bilingual Interface (English / Arabic)
 The entire UI is fully localized in both English and Arabic, including task titles, questions, hints, concept explanations, menus, and status messages. The language is selected on first run and stored in the progress file.
 
@@ -100,7 +97,7 @@ For full sandbox isolation, one of the following is needed:
 
 ```bash
 # Option A: run as root or with CAP_SYS_ADMIN
-sudo python3 commandlab.py
+sudo python3 -m commandlab
 
 # Option B: enable unprivileged user namespaces (recommended for normal users)
 sudo sysctl -w kernel.unprivileged_userns_clone=1
@@ -115,15 +112,29 @@ If neither is available, CommandLab falls back to a reduced-security mode and bl
 ```bash
 git clone https://github.com/yourname/commandlab.git
 cd commandlab
-python3 commandlab.py
+bash installer.sh
 ```
 
-Both files must be in the same directory:
+Or launch directly after cloning:
+
+```bash
+python3 -m commandlab
+```
+
+The repository structure:
 
 ```
-commandlab.py          # Main application
-command_classifier.py  # Risk classification engine
-tasks/                 # Optional plugin directory
+commandlab/            # Main package
+├── __main__.py        # Entry point
+├── app.py             # Main loop
+├── classifier/        # Risk classification engine
+├── core/              # Sandbox, locks, progress
+├── data/              # Task database (100 tasks)
+├── engine/            # Task runner
+├── plugins/           # Plugin loader
+└── ui/                # Colors, display, menus, i18n
+installer.sh           # Automated setup script
+tasks/                 # Optional plugin directory (JSON/YAML)
 ```
 
 ---
@@ -133,7 +144,7 @@ tasks/                 # Optional plugin directory
 Launch the tool and navigate using the number keys and shortcut letters shown in each menu:
 
 ```bash
-python3 commandlab.py
+python3 -m commandlab
 ```
 
 **Main menu shortcuts:**
@@ -141,7 +152,6 @@ python3 commandlab.py
 | Key | Action                     |
 |-----|----------------------------|
 | `1–5` | Enter a learning domain  |
-| `c`   | Challenge Mode           |
 | `p`   | Plugin Manager           |
 | `s`   | View your stats          |
 | `l`   | Toggle language (EN/AR)  |
@@ -162,48 +172,41 @@ python3 commandlab.py
 
 ## Plugin Development
 
-CommandLab's plugin system allows you to ship additional task domains as standalone Python files. Plugins are discovered automatically at startup from the `tasks/` subdirectory.
+CommandLab's plugin system allows you to add new task domains as JSON or YAML files. Plugins are discovered automatically at startup from the `tasks/` directory alongside the package.
 
 ### Plugin File Structure
 
-Create a file at `tasks/my_plugin.py`. It must define a `PLUGIN` dictionary:
+Create a file at `tasks/my_plugin.json`:
 
-```python
-PLUGIN = {
-    "domain": "scripting",          # Domain name shown in the main menu
-    "icon": "📝",                   # Emoji icon displayed next to the domain name
-    "tasks": [
-        {
-            "id": 1001,             # Must be globally unique across all tasks
-            "level": "easy",        # "easy" | "medium" | "hard" | "insane"
-            "title": "Hello World",
-            "question": "Print 'Hello, World!' to standard output.",
-            "concept": "echo writes its arguments to stdout followed by a newline.",
-            "hint": "Think about the simplest output command.",
-
-            # Optional Arabic translations
-            "title_ar": "مرحبا بالعالم",
-            "question_ar": "اطبع 'Hello, World!' على المخرج القياسي.",
-            "concept_ar": "الأمر echo يكتب وسيطاته على stdout متبوعة بسطر جديد.",
-            "hint_ar": "فكّر في أبسط أمر للإخراج.",
-
-            "accepted": ["echo Hello, World!", "echo 'Hello, World!'"],
-            "keywords": ["echo", "Hello"],
-            "check_type": "keyword",    # "keyword" | "sandbox"
-
-            # Optional: shell script to run before the task
-            "setup": "touch sample.txt",
-
-            # Optional: callable that verifies the goal was achieved
-            # Signature: verify(sandbox_path, return_code, stdout, stderr) -> (bool, str)
-            "verify": lambda sb, rc, out, err: (
-                "Hello" in out,
-                "Output must contain 'Hello'"
-            ),
-        },
-    ]
+```json
+{
+  "domain": "scripting",
+  "name": "Shell Scripting",
+  "description": "Learn shell scripting fundamentals",
+  "author": "Your Name",
+  "tasks": [
+    {
+      "id": 10001,
+      "level": "easy",
+      "title": "Hello World",
+      "question": "Print 'Hello, World!' to standard output.",
+      "concept": "echo writes its arguments to stdout followed by a newline.",
+      "hint": "Think about the simplest output command.",
+      "title_ar": "مرحبا بالعالم",
+      "question_ar": "اطبع 'Hello, World!' على المخرج القياسي.",
+      "concept_ar": "الأمر echo يكتب وسيطاته على stdout متبوعة بسطر جديد.",
+      "hint_ar": "فكّر في أبسط أمر للإخراج.",
+      "accepted": ["echo 'Hello, World!'", "echo Hello, World!"],
+      "keywords": ["echo", "Hello"],
+      "check_type": "keyword",
+      "setup": "",
+      "verify": null
+    }
+  ]
 }
 ```
+
+YAML is also supported if PyYAML is installed (`tasks/my_plugin.yaml`).
 
 ### Task Fields Reference
 
@@ -224,69 +227,68 @@ PLUGIN = {
 
 ### How Plugins Are Loaded
 
-At startup, CommandLab scans `tasks/*.py`, imports each file, reads its `PLUGIN` dict, and registers the domain and task list. Plugin domains appear in the main menu after the built-in domains, tagged with `[PLUGIN]`. Progress, locking, stats, and challenge mode all work identically for plugin tasks.
+At startup, CommandLab scans `tasks/*.json`, `tasks/*.yaml`, and `tasks/*.yml`, parses each file, and registers the domain and task list. Plugin domains appear in the main menu after the built-in domains, tagged with `[plugin]`. Progress, locking, and stats all work identically for plugin tasks.
 
 ---
 
 ## Command Classifier API
 
-`command_classifier.py` can be used independently of the main application:
+The classifier lives in `commandlab/classifier/__init__.py` and can be used independently:
 
 ```python
-from command_classifier import classify
+from commandlab.classifier import classify
 
 result = classify("ls -la && cat /etc/passwd")
-print(result)               # human-readable summary
+print(result)                 # human-readable summary
 print(result.final_decision)  # Decision.SANDBOX
-print(result.to_dict())     # structured dict for JSON serialisation
+print(result.to_dict())       # structured dict for JSON serialisation
 ```
 
 **ClassificationResult fields:**
 
-| Field          | Type             | Description                               |
-|----------------|------------------|-------------------------------------------|
-| `raw_input`    | `str`            | The original command string               |
-| `commands`     | `list[CommandResult]` | Per-segment breakdown              |
-| `final_decision` | `Decision`     | Highest-risk decision across all segments |
-| `flagged`      | `bool`           | True if obfuscation patterns were detected|
+| Field            | Type                  | Description                                |
+|------------------|-----------------------|--------------------------------------------|
+| `raw_input`      | `str`                 | The original command string                |
+| `commands`       | `list[CommandResult]` | Per-segment breakdown                      |
+| `final_decision` | `Decision`            | Highest-risk decision across all segments  |
+| `flagged`        | `bool`                | True if obfuscation patterns were detected |
 
-Running `python3 command_classifier.py` executes its built-in test suite of 40+ cases.
+Running `python3 -m commandlab.classifier` executes its built-in test suite.
 
 ---
 
 ## Architecture
 
 ```
-commandlab.py
-├── Localization (T(), STRINGS)
-├── Task Database (TASKS)
-├── Plugin Loader (_load_plugins)
-├── Command Classifier Integration (_classifier_gate)
-├── Sandbox
-│   ├── _detect_sandbox_mode()
-│   ├── _build_chroot_root()
-│   ├── Sandbox.setup()
-│   ├── Sandbox.run()
-│   └── Sandbox.verify()
-├── Answer Checker (check_answer)
-├── UI Screens
-│   ├── show_main_menu()
-│   ├── show_domain_menu()
-│   ├── show_task()
-│   ├── show_challenges()
-│   ├── show_plugins()
-│   └── show_stats()
-└── Main Loop (main)
-
-command_classifier.py
-├── Risk (Enum: SAFE, INSPECT, MODIFY, CONTROL)
-├── Decision (Enum: SAFE_EXECUTE, SANDBOX, TEXT_ONLY, BLOCK)
-├── CommandClassifier
-│   ├── classify(raw_input)
-│   ├── _split_commands()
-│   ├── _assess_risk()
-│   └── _check_path_risks()
-└── classify() (module-level convenience function)
+commandlab/
+├── __main__.py              # Entry point (python3 -m commandlab)
+├── app.py                   # Main loop and menu routing
+│
+├── classifier/
+│   └── __init__.py          # Risk classification engine
+│       ├── Risk              (Enum: SAFE, INSPECT, MODIFY, CONTROL)
+│       ├── Decision          (Enum: SAFE_EXECUTE, SANDBOX, TEXT_ONLY, BLOCK)
+│       └── classify()        (module-level convenience function)
+│
+├── core/
+│   ├── sandbox.py           # Sandbox: chroot jail, setup, run, verify
+│   ├── locks.py             # Level unlock logic
+│   └── progress.py          # Progress load/save (JSON)
+│
+├── data/
+│   └── tasks.py             # Task database (100 built-in tasks)
+│
+├── engine/
+│   └── task_runner.py       # show_task(): display, input loop, answer check
+│
+├── plugins/
+│   └── loader.py            # JSON/YAML plugin discovery and registration
+│
+└── ui/
+    ├── colors.py            # ANSI color codes
+    ├── display.py           # progress_bar, box, hr, diff_badge
+    ├── i18n.py              # T(), set_language(), bilingual strings
+    └── menus.py             # show_main_menu(), show_domain_menu(), show_stats()
 ```
 
 ---

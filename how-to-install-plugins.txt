@@ -1,0 +1,113 @@
+============================================================
+  CommandLab — How to Install Plugins
+============================================================
+
+WHAT ARE PLUGINS?
+-----------------
+Plugins are extra task packs (JSON or YAML files) that add
+new domains to CommandLab (e.g. storage management, SELinux,
+package management, etc.).
+
+
+STEPS TO INSTALL A PLUGIN
+--------------------------
+
+1. Place your plugin file(s) in the same folder as install_plugins.sh.
+   The installer can be placed ANYWHERE — it will find CommandLab
+   automatically.
+
+   Example layout (installer inside the project):
+
+     commandlab-project/
+       commandlab/              <- tool (do not touch)
+       tasks/                   <- installed plugins go here (auto-created)
+       installer.sh             <- main tool launcher
+       install_plugins.sh       <- plugin installer
+       my_plugin.json           <- your plugin file(s)
+       another_plugin.yaml
+
+   Example layout (installer outside the project):
+
+     ~/my-plugins/
+       install_plugins.sh       <- plugin installer
+       my_plugin.json           <- your plugin file(s)
+
+     ~/commandlab-project/      <- CommandLab is found automatically
+
+2. Run the plugin installer:
+
+     bash install_plugins.sh
+
+   If CommandLab is not found automatically, pass the path:
+
+     bash install_plugins.sh /path/to/commandlab-project
+
+   The script will:
+     - Find the CommandLab project (searches from the script location upward)
+     - Create the tasks/ directory inside the project if it doesn't exist
+     - Validate each .json / .yaml file
+     - Copy valid plugins into tasks/
+     - Report what was installed and what was skipped
+
+3. Launch CommandLab and go to the Plugins menu to use them:
+
+     bash /path/to/commandlab-project/installer.sh
+
+
+PLUGIN FILE FORMAT
+------------------
+Each plugin file must be a JSON or YAML file with this structure:
+
+  {
+    "domain":      "my_domain_name",
+    "name":        "Human Readable Name",
+    "description": "Short description of this plugin pack.",
+    "author":      "Your Name",
+    "tasks": [
+      {
+        "id":         10001,
+        "level":      "easy",
+        "title":      "Task title",
+        "title_ar":   "عنوان المهمة",
+        "question":   "What should the user do?",
+        "question_ar":"ماذا يجب على المستخدم أن يفعل؟",
+        "concept":    "Explanation of the command and how it works.",
+        "concept_ar": "شرح الأمر وكيفية عمله.",
+        "hint":       "A clue if the user is stuck.",
+        "hint_ar":    "تلميح إذا كان المستخدم عالقاً.",
+        "accepted":   ["command1", "command2"],
+        "keywords":   ["keyword1", "keyword2"],
+        "check_type": "keyword",
+        "setup":      "",
+        "verify":     null
+      }
+    ]
+  }
+
+Field notes:
+  domain      - lowercase, underscores only (e.g. "web_servers")
+  level       - one of: easy / medium / hard / insane
+  accepted    - list of exact valid answers; at least one required
+  keywords    - ALL must appear as substrings in every accepted answer
+  check_type  - "keyword" (substring match) or "exact" (exact match)
+  setup       - shell command to run before the task (optional)
+  verify      - null for keyword tasks (optional lambda for advanced use)
+
+
+REMOVING A PLUGIN
+-----------------
+Delete the plugin's .json or .yaml file from the tasks/ directory:
+
+  rm tasks/my_plugin.json
+
+Restart CommandLab for the change to take effect.
+
+
+NOTES
+-----
+- Plugin IDs must not clash with built-in task IDs (1-100).
+  Use IDs above 10000 to be safe.
+- If PyYAML is not installed, .yaml files will be skipped.
+  Install it with:  pip3 install pyyaml
+- The installer never modifies the commandlab/ package itself.
+============================================================
