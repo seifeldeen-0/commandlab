@@ -110,7 +110,7 @@ If neither is available, CommandLab falls back to a reduced-security mode and bl
 ## Installation
 
 ```bash
-git clone https://github.com/yourname/commandlab.git
+git clone https://github.com/seifeldeen-0/commandlab
 cd commandlab
 bash installer.sh
 ```
@@ -133,8 +133,9 @@ commandlab/            # Main package
 ├── engine/            # Task runner
 ├── plugins/           # Plugin loader
 └── ui/                # Colors, display, menus, i18n
-installer.sh           # Automated setup script
-tasks/                 # Optional plugin directory (JSON/YAML)
+installer.sh           # Setup and launch script
+install_plugins.sh     # Plugin installer script
+tasks/                 # Plugin directory, auto-created on first run (JSON/YAML)
 ```
 
 ---
@@ -265,10 +266,11 @@ commandlab/
 ├── app.py                   # Main loop and menu routing
 │
 ├── classifier/
-│   └── __init__.py          # Risk classification engine
-│       ├── Risk              (Enum: SAFE, INSPECT, MODIFY, CONTROL)
-│       ├── Decision          (Enum: SAFE_EXECUTE, SANDBOX, TEXT_ONLY, BLOCK)
-│       └── classify()        (module-level convenience function)
+│   ├── __init__.py          # Risk classification engine
+│   │   ├── Risk              (Enum: SAFE, INSPECT, MODIFY, CONTROL)
+│   │   ├── Decision          (Enum: SAFE_EXECUTE, SANDBOX, TEXT_ONLY, BLOCK)
+│   │   └── classify()        (module-level convenience function)
+│   └── __main__.py          # Built-in classifier test suite
 │
 ├── core/
 │   ├── sandbox.py           # Sandbox: chroot jail, setup, run, verify

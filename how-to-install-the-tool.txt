@@ -30,7 +30,7 @@ Option A — Download the ZIP from GitHub:
        cd commandlab-main
 
 Option B — Clone with Git:
-       git clone https://github.com/<your-repo>/commandlab.git
+       git clone https://github.com/seifeldeen-0/commandlab
        cd commandlab
 
 

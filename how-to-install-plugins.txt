@@ -89,7 +89,7 @@ Field notes:
   level       - one of: easy / medium / hard / insane
   accepted    - list of exact valid answers; at least one required
   keywords    - ALL must appear as substrings in every accepted answer
-  check_type  - "keyword" (substring match) or "exact" (exact match)
+  check_type  - "keyword" (text/keyword match) or "sandbox" (executed in isolated environment)
   setup       - shell command to run before the task (optional)
   verify      - null for keyword tasks (optional lambda for advanced use)
 
